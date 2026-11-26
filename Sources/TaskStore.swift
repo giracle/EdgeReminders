@@ -167,8 +167,10 @@ struct ReminderItem: Identifiable, Hashable, Codable {
     fileprivate var generatedBy: String?
     fileprivate var storedSubtasks: [ReminderSubtask]?
     var snoozedUntil: Date?
+    fileprivate var storedResources: [ReminderResource]?
 
     var subtasks: [ReminderSubtask] { storedSubtasks ?? [] }
+    var resources: [ReminderResource] { storedResources ?? [] }
 
     var localNotificationDate: Date? {
         guard source == .local, !isCompleted else { return nil }
@@ -179,13 +181,14 @@ struct ReminderItem: Identifiable, Hashable, Codable {
         case id, listID, title, notes, dueDate, hasTime, alerts, isCompleted, completionDate
         case priority, repeatRule, source, isWritable, repeatAnchor, generatedBy, snoozedUntil
         case storedSubtasks = "subtasks"
+        case storedResources = "resources"
     }
 
     fileprivate func hasSameEditableFields(as other: Self) -> Bool {
         listID == other.listID && title == other.title && notes == other.notes
             && dueDate == other.dueDate && hasTime == other.hasTime && alerts == other.alerts
             && priority == other.priority && repeatRule == other.repeatRule
-            && snoozedUntil == other.snoozedUntil
+            && snoozedUntil == other.snoozedUntil && resources == other.resources
             && subtasks.elementsEqual(other.subtasks) { $0.title == $1.title && $0.isCompleted == $1.isCompleted }
     }
 }
@@ -201,6 +204,7 @@ struct ReminderDraft: Equatable {
     var priority = ReminderPriority.none
     var repeatRule = ReminderRepeat.never
     var subtasks = [ReminderSubtask]()
+    var resources = [ReminderResource]()
     fileprivate var original: ReminderItem?
 
     init(listID: String) {
@@ -218,6 +222,7 @@ struct ReminderDraft: Equatable {
         priority = item.priority
         repeatRule = item.repeatRule
         subtasks = item.subtasks
+        resources = item.resources
         original = item
     }
 }
@@ -233,10 +238,22 @@ final class TaskStore: ObservableObject {
     @Published var errorMessage: String?
 
     private struct LocalData: Codable {
-        var lists = [ReminderList(id: "local-inbox", title: "收件箱", source: .local, isWritable: true, accountName: nil)]
+        static let inbox = ReminderList(id: "local-inbox", title: "收件箱", source: .local, isWritable: true, accountName: nil)
+
+        var lists = [Self.inbox]
         var items = [ReminderItem]()
         var pinnedTaskIDs: [String]?
         var templates: [ReminderTemplate]?
+        var appleResources: [String: [ReminderResource]]?
+
+        mutating func setAppleResources(_ resources: [ReminderResource], for id: String) {
+            if resources.isEmpty {
+                appleResources?[id] = nil
+            } else {
+                appleResources = appleResources ?? [:]
+                appleResources?[id] = resources
+            }
+        }
     }
 
     private enum StoreError: LocalizedError {
@@ -383,6 +400,7 @@ final class TaskStore: ObservableObject {
             let date = normalizedLocalDate(draft.dueDate, hasTime: draft.hasTime)
             let scheduleChanged = existing?.dueDate != date || existing?.repeatRule != draft.repeatRule
             let subtasks = try localSubtasks(for: draft, existing: existing)
+            let resources = draft.resources == original?.resources ? existing?.resources ?? [] : distinctResources(draft.resources)
             let item = ReminderItem(id: draft.id ?? UUID().uuidString, listID: list.id, title: title,
                                     notes: draft.notes, dueDate: date, hasTime: date != nil && draft.hasTime,
                                     alerts: date != nil && draft.hasTime && draft.alerts,
@@ -390,7 +408,7 @@ final class TaskStore: ObservableObject {
                                     priority: draft.priority, repeatRule: draft.repeatRule, source: .local, isWritable: true,
                                     repeatAnchor: scheduleChanged ? date : existing?.repeatAnchor,
                                     generatedBy: existing?.generatedBy, storedSubtasks: subtasks,
-                                    snoozedUntil: existing?.snoozedUntil)
+                                    snoozedUntil: existing?.snoozedUntil, storedResources: resources)
             try changeLocal { data in
                 if let index = data.items.firstIndex(where: { $0.id == item.id }) {
                     data.items[index] = item
@@ -401,6 +419,40 @@ final class TaskStore: ObservableObject {
         case .apple:
             guard draft.subtasks.isEmpty else { throw StoreError.localSubtasks }
             try saveApple(draft, title: title, existing: existing)
+        }
+    }
+
+    func capture(title: String, notes: String, resources: [ReminderResource]) throws {
+        let item = ReminderItem(id: UUID().uuidString, listID: LocalData.inbox.id, title: try listTitle(title),
+                                notes: notes, hasTime: false, alerts: false, isCompleted: false,
+                                priority: .none, repeatRule: .never, source: .local, isWritable: true,
+                                storedResources: distinctResources(resources))
+        try changeLocal { data in
+            if !data.lists.contains(where: { $0.id == LocalData.inbox.id }) {
+                data.lists.insert(LocalData.inbox, at: 0)
+            }
+            data.items.append(item)
+        }
+    }
+
+    func resources(for item: ReminderItem) -> [ReminderResource] {
+        tasks.first { $0.id == item.id && $0.source == item.source }?.resources ?? []
+    }
+
+    func saveResources(_ resources: [ReminderResource], for item: ReminderItem) throws {
+        guard let current = tasks.first(where: { $0.id == item.id && $0.source == item.source }) else {
+            throw StoreError.missing
+        }
+        let resources = distinctResources(resources)
+        guard current.resources != resources else { return }
+        try changeLocal { data in
+            switch item.source {
+            case .local:
+                guard let index = data.items.firstIndex(where: { $0.id == item.id }) else { throw StoreError.missing }
+                data.items[index].storedResources = resources
+            case .apple:
+                data.setAppleResources(resources, for: item.id)
+            }
         }
     }
 
@@ -431,7 +483,8 @@ final class TaskStore: ObservableObject {
                                         alerts: stored.alerts, isCompleted: false, completionDate: nil,
                                         priority: stored.priority, repeatRule: stored.repeatRule, source: .local,
                                         isWritable: true, repeatAnchor: stored.repeatAnchor ?? due, generatedBy: stored.id,
-                                        storedSubtasks: stored.subtasks.map { ReminderSubtask(title: $0.title) })
+                                        storedSubtasks: stored.subtasks.map { ReminderSubtask(title: $0.title) },
+                                        storedResources: stored.storedResources)
                 }
                 data.items[index].isCompleted = completed
                 data.items[index].completionDate = completed ? now : nil
@@ -451,7 +504,7 @@ final class TaskStore: ObservableObject {
             let reminder = try writableAppleItem(item.id)
             guard reminder.isCompleted != completed else { return }
             reminder.isCompleted = completed
-            try commitApple(reminder)
+            try commitApple(reminder, previousID: item.id)
         }
     }
 
@@ -504,8 +557,11 @@ final class TaskStore: ObservableObject {
             try eventStore.remove(reminder, commit: true)
             appleItems.removeAll { $0.id == item.id }
             refresh()
-            if pinnedTaskIDs.contains(item.id) {
-                try? changeLocal { $0.pinnedTaskIDs?.removeAll { $0 == item.id } }
+            if pinnedTaskIDs.contains(item.id) || local.appleResources?[item.id] != nil {
+                try? changeLocal { data in
+                    data.pinnedTaskIDs?.removeAll { $0 == item.id }
+                    data.setAppleResources([], for: item.id)
+                }
             }
         }
     }
@@ -572,7 +628,11 @@ final class TaskStore: ObservableObject {
 
     private func publish() {
         lists = local.lists + appleLists.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-        tasks = local.items + appleItems
+        tasks = local.items + appleItems.map { item in
+            var item = item
+            item.storedResources = local.appleResources?[item.id]
+            return item
+        }
         let pins = local.pinnedTaskIDs ?? []
         let templates = local.templates ?? []
         if pinnedTaskIDs != pins { pinnedTaskIDs = pins }
@@ -583,11 +643,20 @@ final class TaskStore: ObservableObject {
         guard localReadable else { throw StoreError.storageUnreadable }
         var updated = local
         try edit(&updated)
-        try FileManager.default.createDirectory(at: localURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(updated).write(to: localURL, options: .atomic)
+        try writeLocal(updated)
         local = updated
         publish()
         updateNotificationSchedule()
+    }
+
+    private func writeLocal(_ data: LocalData) throws {
+        try FileManager.default.createDirectory(at: localURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(data).write(to: localURL, options: .atomic)
+    }
+
+    private func distinctResources(_ resources: [ReminderResource]) -> [ReminderResource] {
+        var urls = Set<URL>()
+        return resources.filter { urls.insert($0.url).inserted }
     }
 
     private func normalizedLocalDate(_ date: Date?, hasTime: Bool) -> Date? {
@@ -646,7 +715,11 @@ final class TaskStore: ObservableObject {
         let changingTitle = original?.title != draft.title
         let changingNotes = (original?.notes ?? "") != draft.notes
         let changingPriority = (original?.priority ?? .none) != draft.priority
-        guard changingDate || changingAlarm || changingRepeat || changingList || changingTitle || changingNotes || changingPriority else { return }
+        let resources = draft.resources == original?.resources ? nil : distinctResources(draft.resources)
+        guard changingDate || changingAlarm || changingRepeat || changingList || changingTitle || changingNotes || changingPriority else {
+            if let resources, let existing { try saveResources(resources, for: existing) }
+            return
+        }
 
         if changingList { reminder.calendar = calendar }
         if changingTitle { reminder.title = title }
@@ -676,17 +749,40 @@ final class TaskStore: ObservableObject {
                 reminder.addAlarm(EKAlarm(absoluteDate: due))
             }
         }
-        try commitApple(reminder, previousID: existing?.id)
+        try commitApple(reminder, previousID: existing?.id, resources: resources)
     }
 
-    private func commitApple(_ reminder: EKReminder, previousID: String? = nil) throws {
+    private func commitApple(_ reminder: EKReminder, previousID: String?, resources: [ReminderResource]? = nil) throws {
+        let previousResources = previousID.flatMap { local.appleResources?[$0] }
+        let resourcesToKeep = resources ?? previousResources
+        var updatedLocal: LocalData?
         do {
-            try eventStore.save(reminder, commit: true)
+            if let resourcesToKeep, !resourcesToKeep.isEmpty || previousResources != nil {
+                // Stage EventKit first to obtain the identifier without publishing a task before its links are stored.
+                try eventStore.save(reminder, commit: false)
+                let id = reminder.calendarItemIdentifier
+                if id != previousID || resourcesToKeep != previousResources {
+                    guard localReadable else { throw StoreError.storageUnreadable }
+                    var updated = local
+                    if let previousID, id != previousID { updated.setAppleResources([], for: previousID) }
+                    updated.setAppleResources(resourcesToKeep, for: id)
+                    try writeLocal(updated)
+                    updatedLocal = updated
+                }
+                try eventStore.commit()
+            } else {
+                try eventStore.save(reminder, commit: true)
+            }
         } catch {
+            if updatedLocal != nil {
+                do { try writeLocal(local) }
+                catch { localReadable = false }
+            }
             eventStore.reset()
             refresh()
             throw error
         }
+        if let updatedLocal { local = updatedLocal }
         if let saved = Self.item(from: reminder) {
             appleItems.removeAll { $0.id == saved.id || $0.id == previousID }
             appleItems.append(saved)

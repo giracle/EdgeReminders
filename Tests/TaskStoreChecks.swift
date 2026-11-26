@@ -60,6 +60,7 @@ struct TaskStoreChecks {
 
         try checkLegacyUpgrade(in: directory)
         try checkSubtasksAndLocalPreferences(in: directory)
+        try checkCapturedResources(in: directory)
     }
 
     private static func checkLegacyUpgrade(in directory: URL) throws {
@@ -78,6 +79,7 @@ struct TaskStoreChecks {
         let store = TaskStore(localURL: file, enablesNotifications: false)
         let original = store.tasks.first { $0.id == "old-task" }!
         precondition(original.title == "旧事项" && original.subtasks.isEmpty && original.snoozedUntil == nil)
+        precondition(original.resources.isEmpty)
         precondition(store.templates.isEmpty && store.pinnedTaskIDs.isEmpty)
         var edit = ReminderDraft(original)
         edit.subtasks = [ReminderSubtask(title: "兼容旧数据")]
@@ -150,5 +152,56 @@ struct TaskStoreChecks {
         try reopened.deleteTemplate(template)
         try reopened.deleteLocalList(list)
         precondition(reopened.tasks.isEmpty && reopened.pinnedTaskIDs.isEmpty && reopened.templates.isEmpty)
+    }
+
+    private static func checkCapturedResources(in directory: URL) throws {
+        let file = directory.appending(path: "Captured.json")
+        let store = TaskStore(localURL: file, enablesNotifications: false)
+        let website = ReminderResource(url: URL(string: "https://example.org/manual")!, title: "手册")!
+        let duplicate = ReminderResource(url: website.url)!
+        let documentURL = directory.appending(path: "source.txt")
+        try Data("source".utf8).write(to: documentURL)
+        let document = ReminderResource(url: documentURL)!
+        let initialInbox = store.lists.first { $0.id == "local-inbox" }!
+        try store.createLocalList("个人")
+        try store.deleteLocalList(initialInbox)
+        precondition(!store.lists.contains { $0.id == initialInbox.id })
+
+        try store.capture(title: "  参考资料 ", notes: "从浏览器拖入", resources: [website, duplicate, document])
+        let captured = store.tasks.first { $0.title == "参考资料" }!
+        precondition(captured.listID == initialInbox.id && store.lists.contains(initialInbox))
+        precondition(captured.notes == "从浏览器拖入" && captured.resources == [website, document])
+
+        var staleEdit = ReminderDraft(captured)
+        try store.saveResources([document], for: captured)
+        staleEdit.title = "更新标题"
+        try store.save(staleEdit)
+        precondition(store.resources(for: captured) == [document])
+
+        let reopened = TaskStore(localURL: file, enablesNotifications: false)
+        let restored = reopened.tasks.first { $0.id == captured.id }!
+        precondition(restored.title == "更新标题" && restored.resources == [document])
+        var edit = ReminderDraft(restored)
+        edit.resources = []
+        try reopened.save(edit)
+        precondition(reopened.resources(for: captured).isEmpty)
+
+        var repeatDraft = ReminderDraft(listID: initialInbox.id)
+        repeatDraft.title = "复读手册"
+        repeatDraft.dueDate = Calendar.current.startOfDay(for: .now.addingTimeInterval(172_800))
+        repeatDraft.repeatRule = .weekly
+        repeatDraft.resources = [website]
+        try reopened.save(repeatDraft)
+        let recurring = reopened.tasks.first { $0.title == "复读手册" }!
+        try reopened.setCompleted(recurring, true)
+        let next = reopened.tasks.first { $0.id != recurring.id && $0.title == recurring.title }!
+        precondition(next.resources == [website])
+        try reopened.saveResources([website, document], for: next)
+        try reopened.setCompleted(recurring, false)
+        precondition(reopened.resources(for: next) == [website, document])
+
+        try reopened.capture(title: "便笺", notes: "一段选择的文字", resources: [])
+        let text = reopened.tasks.first { $0.title == "便笺" }!
+        precondition(text.resources.isEmpty && text.notes == "一段选择的文字" && !text.isCompleted)
     }
 }

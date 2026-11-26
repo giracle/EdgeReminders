@@ -30,6 +30,7 @@ final class FloatingPanelController: NSObject {
     private let panel: FloatingWindow
     private let effects = PanelEffects()
     private let quickAdd = PanelQuickAdd()
+    private let dropFeedback = InboxDropFeedback()
     private let size = CGSize(width: 380, height: 390)
     private var state: State = .floating
     private var dock: PanelDock?
@@ -52,8 +53,14 @@ final class FloatingPanelController: NSObject {
     private var hasDragged = false
     private var waitUntil: TimeInterval = 0
     private var waitsForPanelEntry = false
+    private var initialDragPasteboardChangeCount: Int?
+    private var lastReleasedDragPasteboardChangeCount: Int?
 
-    init(store: TaskStore, onOpenManager: @escaping () -> Void) {
+    init(store: TaskStore, onOpenManager: @escaping () -> Void, onOpenTimer: @escaping () -> Void,
+         onQuit: @escaping () -> Void,
+         onFocusTask: @escaping (ReminderItem) -> Void, onStartTaskTimer: @escaping (ReminderItem) -> Void,
+         onContinueTask: @escaping (ReminderItem, Bool) -> Void,
+         onCapture: @escaping (String, String, [ReminderResource]) -> Bool) {
         panel = FloatingWindow(contentRect: CGRect(origin: .zero, size: size),
                                styleMask: [.borderless, .nonactivatingPanel],
                                backing: .buffered, defer: false)
@@ -70,19 +77,24 @@ final class FloatingPanelController: NSObject {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.animationBehavior = .none
 
-        let content = TaskPanelView(store: store, quickAdd: quickAdd, onOpenManager: onOpenManager) { [weak self] editing in
+        let content = TaskPanelView(store: store, quickAdd: quickAdd, onOpenManager: onOpenManager,
+                                    onOpenTimer: onOpenTimer, onQuit: onQuit, onFocusTask: onFocusTask,
+                                    onStartTaskTimer: onStartTaskTimer, onContinueTask: onContinueTask) { [weak self] editing in
             self?.setEditing(editing)
         }
         let host = NSHostingView(rootView: ZStack {
             GlassSurface(effects: effects).accessibilityHidden(true)
             content
+            InboxDropIndicator(feedback: dropFeedback)
         }.frame(width: size.width, height: size.height))
         host.sizingOptions = []
-        let container = NSView(frame: CGRect(origin: .zero, size: size))
+        let container = InboxDropView(frame: CGRect(origin: .zero, size: size))
+        container.onCapture = { onCapture($0.title, $0.notes, $0.resources) }
+        container.onFeedback = { [weak self] in self?.dropFeedback.show($0) }
         container.addSubview(host)
         host.frame = container.bounds
         host.autoresizingMask = [.width, .height]
-        let handle = DragHandle(frame: CGRect(x: 0, y: size.height - 50, width: 210, height: 50))
+        let handle = DragHandle(frame: CGRect(x: 0, y: size.height - 50, width: 170, height: 50))
         handle.setAccessibilityElement(false)
         handle.began = { [weak self] in self?.beginDrag($0) }
         handle.moved = { [weak self] in self?.drag($0) }
@@ -171,10 +183,24 @@ final class FloatingPanelController: NSObject {
         let now = ProcessInfo.processInfo.systemUptime
         let current = findDock(near: point, threshold: 3, cornerInset: 16)
         if let blocked, current.map({ sameSide($0, blocked) }) != true { self.blocked = nil }
-        let mouseDown = NSEvent.pressedMouseButtons != 0
+        let pressed = NSEvent.pressedMouseButtons
+        let mouseDown = pressed != 0
+        let leftDown = pressed & 1 != 0
+
+        if !leftDown, initialDragPasteboardChangeCount != nil {
+            initialDragPasteboardChangeCount = nil
+            lastReleasedDragPasteboardChangeCount = NSPasteboard(name: .drag).changeCount
+            candidate = nil
+        }
 
         if state == .hidden || state == .closing {
-            guard !mouseDown, let current, blocked == nil, now >= waitUntil else {
+            if leftDown, initialDragPasteboardChangeCount == nil {
+                initialDragPasteboardChangeCount = lastReleasedDragPasteboardChangeCount
+                    ?? NSPasteboard(name: .drag).changeCount
+                candidate = nil
+            }
+            guard let current, blocked == nil, now >= waitUntil,
+                  !mouseDown || hasExternalDropInProgress else {
                 candidate = nil
                 return
             }
@@ -203,6 +229,14 @@ final class FloatingPanelController: NSObject {
         } else {
             departedAt = now
         }
+    }
+
+    private var hasExternalDropInProgress: Bool {
+        guard let initialDragPasteboardChangeCount else { return false }
+        let dragPasteboard = NSPasteboard(name: .drag)
+        // The drop contents are read only by InboxDropView after a native drop.
+        return dragPasteboard.changeCount != initialDragPasteboardChangeCount
+            && dragPasteboard.availableType(from: InboxDropContent.types) != nil
     }
 
     private func setEditing(_ value: Bool) {
@@ -242,6 +276,9 @@ final class FloatingPanelController: NSObject {
     }
 
     private func close(at anchor: PanelDock) {
+        if NSEvent.pressedMouseButtons & 1 == 0 {
+            lastReleasedDragPasteboardChangeCount = NSPasteboard(name: .drag).changeCount
+        }
         waitsForPanelEntry = false
         dock = anchor
         state = .closing

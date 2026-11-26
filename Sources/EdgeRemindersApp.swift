@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UserNotifications
 
@@ -17,6 +18,11 @@ enum EdgeRemindersApp {
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private let store = TaskStore()
+    private let focusTimer = FocusTimer()
+    private let timerCompletionBorder = TimerCompletionBorder()
+    private var timerPanel: FocusTimerPanelController?
+    private var timerMenuObservation: AnyCancellable?
+    private var timerCompletionObservation: AnyCancellable?
     private var floating: FloatingPanelController?
     private var globalQuickAdd: GlobalQuickAdd?
     private var manager: NSWindow?
@@ -28,14 +34,36 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
         globalQuickAdd = shortcut
         installMenus(shortcutAvailable: shortcutAvailable)
         UNUserNotificationCenter.current().delegate = self
-        floating = FloatingPanelController(store: store) { [weak self] in
-            self?.showManager()
+        timerPanel = FocusTimerPanelController(timer: focusTimer)
+        floating = FloatingPanelController(
+            store: store,
+            onOpenManager: { [weak self] in self?.showManager() },
+            onOpenTimer: { [weak self] in self?.showTimer() },
+            onQuit: { NSApp.terminate(nil) },
+            onFocusTask: { [weak self] in self?.focus(on: $0) },
+            onStartTaskTimer: { [weak self] in self?.startTimer(for: $0) },
+            onContinueTask: { [weak self] in self?.continueTask($0, startTimer: $1) },
+            onCapture: { [weak self] title, notes, resources in
+                self?.capture(title: title, notes: notes, resources: resources) ?? false
+            }
+        )
+        timerMenuObservation = focusTimer.objectWillChange.sink { [weak self] in
+            Task { @MainActor in self?.updateStatusTimer() }
         }
+        timerCompletionObservation = focusTimer.$completionID.compactMap { $0 }.sink { [weak self] _ in
+            self?.previewTimerCompletion()
+        }
+        updateStatusTimer()
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(refreshTimer),
+                                                           name: NSWorkspace.didWakeNotification, object: nil)
         floating?.show()
+        timerPanel?.restoreIfNeeded()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        timerCompletionBorder.stop()
         globalQuickAdd?.unregister()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -48,9 +76,79 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
         [.banner, .list, .sound]
     }
 
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                           didReceive response: UNNotificationResponse) async {
+        let identifier = response.notification.request.identifier
+        if identifier.hasPrefix(FocusTimer.notificationIdentifierPrefix),
+           response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+            await MainActor.run { showTimer() }
+        }
+    }
+
     @objc private func showPanel() { floating?.show() }
     @objc private func hidePanel() { floating?.hide() }
     @objc private func openQuickAdd() { floating?.openQuickAdd() }
+    @objc private func showTimer() { timerPanel?.show() }
+    @objc private func refreshTimer() { focusTimer.refresh() }
+
+    @objc private func previewTimerCompletion() {
+        guard let screen = timerPanel?.completionScreen ?? NSScreen.main else { return }
+        timerCompletionBorder.play(on: screen)
+    }
+
+    private func focus(on item: ReminderItem) {
+        timerPanel?.show(task: .init(id: item.id, title: item.title))
+    }
+
+    private func startTimer(for item: ReminderItem) {
+        guard let current = store.tasks.first(where: { $0.id == item.id && $0.source == item.source }),
+              !current.isCompleted else { return }
+        if focusTimer.start(mode: .focus, task: .init(id: current.id, title: current.title)) {
+            timerPanel?.showClock()
+        } else {
+            timerPanel?.show()
+        }
+    }
+
+    private func continueTask(_ item: ReminderItem, startTimer: Bool) {
+        let resources = store.resources(for: item)
+        guard !resources.isEmpty else { return }
+        var opened = false
+        var failures = [String]()
+        for resource in resources {
+            if let url = resource.resolvedURL(), NSWorkspace.shared.open(url) {
+                opened = true
+            } else {
+                failures.append(resource.title)
+            }
+        }
+        if !failures.isEmpty {
+            let names = failures.prefix(3).joined(separator: "、")
+            let suffix = failures.count > 3 ? "等 \(failures.count) 项" : ""
+            store.errorMessage = "无法打开资料。\(names)\(suffix)"
+        }
+        if startTimer, opened { self.startTimer(for: item) }
+    }
+
+    private func capture(title: String, notes: String, resources: [ReminderResource]) -> Bool {
+        do {
+            try store.capture(title: title, notes: notes, resources: resources)
+            return true
+        } catch {
+            store.errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func updateStatusTimer() {
+        guard let statusItem, let button = statusItem.button else { return }
+        let showTime = focusTimer.settings.showInMenuBar && focusTimer.status != .idle
+        let hasIcon = button.image != nil
+        statusItem.length = showTime || !hasIcon ? NSStatusItem.variableLength : NSStatusItem.squareLength
+        button.imagePosition = hasIcon ? (showTime ? .imageLeading : .imageOnly) : .noImage
+        button.title = showTime ? focusTimer.displayTime : (hasIcon ? "" : "浮光")
+        button.toolTip = showTime ? "浮光提醒 · \(focusTimer.displayTime)" : "浮光提醒"
+    }
 
     @objc private func showManager() {
         if manager == nil {
@@ -59,7 +157,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
             window.title = "浮光提醒"
             window.contentMinSize = NSSize(width: 600, height: 420)
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: TaskManagerView(store: store))
+            window.contentView = NSHostingView(rootView: TaskManagerView(
+                store: store,
+                onFocusTask: { [weak self] in self?.focus(on: $0) },
+                onStartTaskTimer: { [weak self] in self?.startTimer(for: $0) },
+                onContinueTask: { [weak self] in self?.continueTask($0, startTimer: $1) }
+            ))
             window.center()
             manager = window
         }
@@ -69,10 +172,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
 
     private func installMenus(shortcutAvailable: Bool) {
         let barItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        let icon = NSImage(systemSymbolName: "checklist", accessibilityDescription: "浮光提醒")
-        icon?.isTemplate = true
-        barItem.button?.image = icon
-        barItem.button?.toolTip = "浮光提醒"
+        barItem.autosaveName = "EdgeReminders"
+        barItem.isVisible = true
+        if let button = barItem.button {
+            let icon = NSImage(systemSymbolName: "checklist", accessibilityDescription: "浮光提醒")
+                ?? NSImage(named: NSImage.actionTemplateName)
+            icon?.isTemplate = true
+            button.image = icon
+            button.imageScaling = .scaleProportionallyDown
+            button.setAccessibilityLabel("浮光提醒")
+        }
         let barMenu = NSMenu()
         barMenu.addItem(menuItem("显示浮窗", #selector(showPanel)))
         barMenu.addItem(menuItem("收起浮窗", #selector(hidePanel)))
@@ -80,6 +189,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
         add.keyEquivalentModifierMask = [.control, .shift]
         if !shortcutAvailable { add.toolTip = "全局快捷键当前不可用" }
         barMenu.addItem(add)
+        barMenu.addItem(menuItem("计时…", #selector(showTimer)))
+        barMenu.addItem(menuItem("预览到点彩虹", #selector(previewTimerCompletion)))
         barMenu.addItem(.separator())
         barMenu.addItem(menuItem("管理清单…", #selector(showManager), key: "m"))
         barMenu.addItem(.separator())
@@ -90,6 +201,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
         let mainMenu = NSMenu()
         let applicationMenu = NSMenuItem()
         applicationMenu.submenu = NSMenu(title: "浮光提醒")
+        applicationMenu.submenu?.addItem(menuItem("计时…", #selector(showTimer)))
+        applicationMenu.submenu?.addItem(menuItem("预览到点彩虹", #selector(previewTimerCompletion)))
         applicationMenu.submenu?.addItem(menuItem("管理清单…", #selector(showManager), key: "m"))
         applicationMenu.submenu?.addItem(withTitle: "退出浮光提醒", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         mainMenu.addItem(applicationMenu)

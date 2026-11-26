@@ -6,6 +6,11 @@ struct TaskPanelView: View {
     @ObservedObject var store: TaskStore
     @ObservedObject var quickAdd: PanelQuickAdd
     let onOpenManager: () -> Void
+    let onOpenTimer: () -> Void
+    let onQuit: () -> Void
+    let onFocusTask: (ReminderItem) -> Void
+    let onStartTaskTimer: (ReminderItem) -> Void
+    let onContinueTask: (ReminderItem, Bool) -> Void
     let onEditingChanged: (Bool) -> Void
 
     @AppStorage("floatingPanel.filter") private var filter = "all"
@@ -83,6 +88,11 @@ struct TaskPanelView: View {
             if editor == nil {
                 filterMenu
 
+                Button("计时", systemImage: "timer", action: onOpenTimer)
+                    .labelStyle(.iconOnly)
+                    .help("计时")
+                    .accessibilityIdentifier("open-focus-timer")
+
                 Button("打开清单", systemImage: "sidebar.left", action: onOpenManager)
                     .labelStyle(.iconOnly)
                     .help("打开清单")
@@ -97,6 +107,11 @@ struct TaskPanelView: View {
                     .labelStyle(.iconOnly)
                     .help("返回待办")
             }
+
+            Button("退出浮光提醒", systemImage: "power", action: onQuit)
+                .labelStyle(.iconOnly)
+                .help("退出浮光提醒")
+                .accessibilityIdentifier("quit-app")
         }
         .buttonStyle(PanelIconStyle())
         .padding(.leading, 18)
@@ -172,7 +187,10 @@ struct TaskPanelView: View {
                     store: store,
                     group: DueGroup.classify(item, at: date, calendar: .current),
                     referenceDate: date,
-                    onOpen: { open(.init(item: item)) }
+                    onOpen: { open(.init(item: item)) },
+                    onFocus: { onFocusTask(item) },
+                    onStartTimer: { onStartTaskTimer(item) },
+                    onContinue: { onContinueTask(item, $0) }
                 )
             }
         }
@@ -214,6 +232,9 @@ struct TaskPanelView: View {
 @MainActor
 struct TaskManagerView: View {
     @ObservedObject var store: TaskStore
+    let onFocusTask: (ReminderItem) -> Void
+    let onStartTaskTimer: (ReminderItem) -> Void
+    let onContinueTask: (ReminderItem, Bool) -> Void
 
     @State private var selection: TaskScope? = .all
     @State private var search = ""
@@ -446,10 +467,23 @@ struct TaskManagerView: View {
             store: store,
             group: group,
             referenceDate: date,
-            onOpen: { editor = .init(item: item) }
+            onOpen: { editor = .init(item: item) },
+            onFocus: { onFocusTask(item) },
+            onStartTimer: { onStartTaskTimer(item) },
+            onContinue: { onContinueTask(item, $0) }
         )
         .contextMenu {
             Button(item.isWritable ? "编辑事项" : "查看事项") { editor = .init(item: item) }
+            if !store.resources(for: item).isEmpty {
+                Button("继续", systemImage: "arrow.up.forward.app") { onContinueTask(item, false) }
+                if !item.isCompleted {
+                    Button("继续并开始计时", systemImage: "timer") { onContinueTask(item, true) }
+                }
+            }
+            if !item.isCompleted {
+                Button("开始倒计时", systemImage: "timer") { onStartTaskTimer(item) }
+                Button("专注这件事…", systemImage: "hourglass") { onFocusTask(item) }
+            }
             if item.isWritable {
                 Button(item.isCompleted ? "恢复待办" : "标为完成") {
                     perform { try store.setCompleted(item, !item.isCompleted) }
@@ -553,6 +587,9 @@ private struct ReminderRow: View {
     let group: DueGroup?
     let referenceDate: Date
     let onOpen: () -> Void
+    let onFocus: () -> Void
+    let onStartTimer: () -> Void
+    let onContinue: (Bool) -> Void
 
     @State private var hovering = false
     @State private var showsSubtasks = false
@@ -560,6 +597,7 @@ private struct ReminderRow: View {
 
     private var isPinned: Bool { store.pinnedTaskIDs.contains(item.id) }
     private var completedSubtasks: Int { item.subtasks.filter(\.isCompleted).count }
+    private var hasResources: Bool { !store.resources(for: item).isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -657,7 +695,27 @@ private struct ReminderRow: View {
                 .help(showsSubtasks ? "折叠子任务" : "展开子任务")
             }
 
+            if hasResources {
+                Button("继续") { onContinue(false) }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(TaskViewColors.accent)
+                    .padding(.horizontal, 3)
+                    .fixedSize()
+                    .help("打开关联资料")
+                    .accessibilityLabel("继续 \(item.title)")
+            }
+
             if !item.isCompleted {
+                Button("开始倒计时", systemImage: "timer", action: onStartTimer)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(TaskViewColors.accent)
+                    .frame(width: 23, height: 30)
+                    .contentShape(.rect)
+                    .help("开始倒计时")
+                    .accessibilityLabel("开始 \(item.title) 的倒计时")
+                    .accessibilityIdentifier("start-task-countdown")
                 actionMenu
             }
         }
@@ -711,6 +769,10 @@ private struct ReminderRow: View {
 
     private var actionMenu: some View {
         Menu {
+            if hasResources {
+                Button("继续并开始计时", systemImage: "timer") { onContinue(true) }
+            }
+            Button("专注这件事…", systemImage: "hourglass", action: onFocus)
             Button(isPinned ? "取消置顶" : "置顶到浮窗", systemImage: isPinned ? "pin.slash" : "pin") {
                 perform { try store.setPinned(item, !isPinned) }
             }
@@ -809,6 +871,8 @@ private struct ReminderEditor: View {
     @State private var showTemplateName = false
     @State private var templateName = ""
     @State private var templateToDelete: ReminderTemplate?
+    @State private var showResourceLink = false
+    @State private var resourceLink = ""
     @FocusState private var titleFocused: Bool
     @FocusState private var focusedSubtask: UUID?
 
@@ -875,6 +939,12 @@ private struct ReminderEditor: View {
             Button("删除", role: .destructive, action: delete)
             Button("取消", role: .cancel) {}
         }
+        .alert("添加网页链接", isPresented: $showResourceLink) {
+            TextField("网址", text: $resourceLink)
+            Button("添加", action: addResourceLink)
+                .disabled(resourceLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("取消", role: .cancel) {}
+        }
     }
 
     @ViewBuilder
@@ -898,6 +968,8 @@ private struct ReminderEditor: View {
             .lineLimit(2...4)
             .textFieldStyle(.roundedBorder)
             .accessibilityIdentifier("task-notes")
+
+        resourceSection
 
         Picker("清单", selection: $draft.listID) {
             ForEach(availableLists, id: \.id) { list in
@@ -959,6 +1031,81 @@ private struct ReminderEditor: View {
 
         if selectedList?.source == .local {
             subtaskSection
+        }
+    }
+
+    private var resourceSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("关联资料").font(.callout.weight(.semibold))
+                Spacer()
+                Menu {
+                    Button("添加网页链接", systemImage: "link") {
+                        resourceLink = ""
+                        showResourceLink = true
+                    }
+                    Button("选择文件或文件夹…", systemImage: "folder", action: chooseResourceFiles)
+                } label: {
+                    Label("添加资料", systemImage: "plus")
+                        .labelStyle(.iconOnly)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("添加资料")
+                .accessibilityIdentifier("add-task-resource")
+            }
+
+            ForEach(draft.resources) { resource in
+                HStack(spacing: 6) {
+                    Image(systemName: resource.kind == .web ? "link" : "doc")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text(resource.title)
+                        .font(.callout)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(resource.kind == .web ? resource.url.absoluteString : resource.url.path)
+                    Spacer(minLength: 4)
+                    Button("移除 \(resource.title)", systemImage: "xmark.circle") {
+                        draft.resources.removeAll { $0.id == resource.id }
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("移除关联")
+                }
+            }
+        }
+    }
+
+    private func addResourceLink() {
+        let input = resourceLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        let address = URLComponents(string: input)?.scheme == nil ? "https://" + input : input
+        guard let url = URL(string: address), let resource = ReminderResource(url: url), resource.kind == .web else {
+            message = "请输入有效的网页链接。"
+            return
+        }
+        appendResource(resource)
+    }
+
+    private func chooseResourceFiles() {
+        let panel = NSOpenPanel()
+        panel.prompt = "添加"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.begin { response in
+            guard response == .OK else { return }
+            for url in panel.urls {
+                if let resource = ReminderResource(url: url) { appendResource(resource) }
+            }
+        }
+    }
+
+    private func appendResource(_ resource: ReminderResource) {
+        if !draft.resources.contains(where: { $0.url == resource.url }) {
+            draft.resources.append(resource)
         }
     }
 
