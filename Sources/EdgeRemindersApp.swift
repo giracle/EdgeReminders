@@ -18,16 +18,24 @@ enum EdgeRemindersApp {
 private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private let store = TaskStore()
     private var floating: FloatingPanelController?
+    private var globalQuickAdd: GlobalQuickAdd?
     private var manager: NSWindow?
     private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        installMenus()
+        let shortcut = GlobalQuickAdd { [weak self] in self?.openQuickAdd() }
+        let shortcutAvailable = shortcut.register()
+        globalQuickAdd = shortcut
+        installMenus(shortcutAvailable: shortcutAvailable)
         UNUserNotificationCenter.current().delegate = self
         floating = FloatingPanelController(store: store) { [weak self] in
             self?.showManager()
         }
         floating?.show()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        globalQuickAdd?.unregister()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -42,6 +50,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
 
     @objc private func showPanel() { floating?.show() }
     @objc private func hidePanel() { floating?.hide() }
+    @objc private func openQuickAdd() { floating?.openQuickAdd() }
 
     @objc private func showManager() {
         if manager == nil {
@@ -58,7 +67,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
         manager?.makeKeyAndOrderFront(nil)
     }
 
-    private func installMenus() {
+    private func installMenus(shortcutAvailable: Bool) {
         let barItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let icon = NSImage(systemSymbolName: "checklist", accessibilityDescription: "浮光提醒")
         icon?.isTemplate = true
@@ -67,6 +76,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
         let barMenu = NSMenu()
         barMenu.addItem(menuItem("显示浮窗", #selector(showPanel)))
         barMenu.addItem(menuItem("收起浮窗", #selector(hidePanel)))
+        let add = menuItem("快速新增…", #selector(openQuickAdd), key: shortcutAvailable ? GlobalQuickAdd.keyEquivalent : "")
+        add.keyEquivalentModifierMask = [.control, .shift]
+        if !shortcutAvailable { add.toolTip = "全局快捷键当前不可用" }
+        barMenu.addItem(add)
         barMenu.addItem(.separator())
         barMenu.addItem(menuItem("管理清单…", #selector(showManager), key: "m"))
         barMenu.addItem(.separator())

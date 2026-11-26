@@ -29,6 +29,7 @@ final class FloatingPanelController: NSObject {
 
     private let panel: FloatingWindow
     private let effects = PanelEffects()
+    private let quickAdd = PanelQuickAdd()
     private let size = CGSize(width: 380, height: 390)
     private var state: State = .floating
     private var dock: PanelDock?
@@ -38,6 +39,7 @@ final class FloatingPanelController: NSObject {
     private var departedAt: TimeInterval?
     private var blocked: PanelDock?
     private var editing = false
+    private var menusTracking = 0
     private var tracking: Timer?
     private var animation: Timer?
     private var target: CGPoint = .zero
@@ -68,7 +70,7 @@ final class FloatingPanelController: NSObject {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.animationBehavior = .none
 
-        let content = TaskPanelView(store: store, onOpenManager: onOpenManager) { [weak self] editing in
+        let content = TaskPanelView(store: store, quickAdd: quickAdd, onOpenManager: onOpenManager) { [weak self] editing in
             self?.setEditing(editing)
         }
         let host = NSHostingView(rootView: ZStack {
@@ -91,6 +93,10 @@ final class FloatingPanelController: NSObject {
         NotificationCenter.default.addObserver(self, selector: #selector(displaysChanged),
                                                name: NSApplication.didChangeScreenParametersNotification,
                                                object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(menuBeganTracking),
+                                               name: NSMenu.didBeginTrackingNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(menuEndedTracking),
+                                               name: NSMenu.didEndTrackingNotification, object: nil)
         let timer = Timer(timeInterval: 1 / 30, target: self, selector: #selector(trackPointer), userInfo: nil, repeats: true)
         tracking = timer
         RunLoop.main.add(timer, forMode: .common)
@@ -117,6 +123,12 @@ final class FloatingPanelController: NSObject {
         if state == .hidden || state == .closing { return }
         blocked = anchor
         close(at: anchor)
+    }
+
+    func openQuickAdd() {
+        show()
+        setEditing(true)
+        quickAdd.open()
     }
 
     private func defaultDock(point: CGPoint) -> PanelDock? {
@@ -154,7 +166,7 @@ final class FloatingPanelController: NSObject {
     }
 
     @objc private func trackPointer() {
-        guard !hasDragged, !editing, state != .floating else { return }
+        guard !hasDragged, !editing, menusTracking == 0, state != .floating else { return }
         let point = NSEvent.mouseLocation
         let now = ProcessInfo.processInfo.systemUptime
         let current = findDock(near: point, threshold: 3, cornerInset: 16)
@@ -197,6 +209,17 @@ final class FloatingPanelController: NSObject {
         editing = value
         departedAt = nil
         if value { panel.makeKey() }
+    }
+
+    @objc private func menuBeganTracking() {
+        menusTracking += 1
+        candidate = nil
+        departedAt = nil
+    }
+
+    @objc private func menuEndedTracking() {
+        menusTracking = max(0, menusTracking - 1)
+        departedAt = nil
     }
 
     private func reveal(_ anchor: PanelDock) {

@@ -26,6 +26,7 @@ trap 'find "$work_dir" -depth -delete' EXIT
 mkdir "$work_dir/volume"
 app="$work_dir/volume/EdgeReminders.app"
 ditto "$build_path/Build/Products/Release/EdgeReminders.app" "$app"
+cp LICENSE "$work_dir/volume/LICENSE.txt"
 ln -s /Applications "$work_dir/volume/Applications"
 
 xcrun lipo "$app/Contents/MacOS/EdgeReminders" -verify_arch arm64 x86_64

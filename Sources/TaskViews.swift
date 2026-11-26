@@ -4,9 +4,11 @@ import SwiftUI
 @MainActor
 struct TaskPanelView: View {
     @ObservedObject var store: TaskStore
+    @ObservedObject var quickAdd: PanelQuickAdd
     let onOpenManager: () -> Void
     let onEditingChanged: (Bool) -> Void
 
+    @AppStorage("floatingPanel.filter") private var filter = "all"
     @State private var editor: ReminderEditorRequest?
 
     var body: some View {
@@ -19,30 +21,20 @@ struct TaskPanelView: View {
                     .id(editor.id)
             } else {
                 TimelineView(.everyMinute) { context in
-                    let sections = DueSection.groups(for: store.tasks.filter { !$0.isCompleted }, at: context.date)
-                    if sections.isEmpty {
+                    let items = visibleItems(at: context.date)
+                    let pinned = store.pinnedTaskIDs.compactMap { id in items.first { $0.id == id } }
+                    let pinnedIDs = Set(pinned.map(\.id))
+                    let sections = DueSection.groups(for: items.filter { !pinnedIDs.contains($0.id) }, at: context.date)
+                    if items.isEmpty {
                         emptyState
                     } else {
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 10) {
+                                if !pinned.isEmpty {
+                                    panelSection("置顶", items: pinned, at: context.date)
+                                }
                                 ForEach(sections) { section in
-                                    VStack(alignment: .leading, spacing: 0) {
-                                        Text(section.group.title)
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(.secondary)
-                                            .padding(.leading, 5)
-                                            .padding(.bottom, 3)
-
-                                        ForEach(section.items, id: \.id) { item in
-                                            ReminderRow(
-                                                item: item,
-                                                subtitle: listSubtitle(for: item, in: store.lists),
-                                                group: section.group,
-                                                onToggle: { perform { try store.setCompleted(item, !item.isCompleted) } },
-                                                onOpen: { open(.init(item: item)) }
-                                            )
-                                        }
-                                    }
+                                    panelSection(section.group.title, items: section.items, at: context.date)
                                 }
                             }
                             .padding(.horizontal, 13)
@@ -61,19 +53,25 @@ struct TaskPanelView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .tint(TaskViewColors.accent)
+        .onChange(of: quickAdd.requestID) {
+            if editor == nil { openNewTask() }
+        }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
             if editor == nil {
-                Text("待完成")
+                Text(filterTitle)
                     .font(.system(size: 17, weight: .semibold))
+                    .lineLimit(1)
 
-                let count = store.tasks.lazy.filter { !$0.isCompleted }.count
-                if count > 0 {
-                    Text("\(count) 项")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                TimelineView(.everyMinute) { context in
+                    let count = visibleItems(at: context.date).count
+                    if count > 0 {
+                        Text("\(count) 项")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                 }
             } else {
                 Text(editor?.item == nil ? "新建提醒事项" : "提醒事项详情")
@@ -83,12 +81,14 @@ struct TaskPanelView: View {
             Spacer(minLength: 8)
 
             if editor == nil {
+                filterMenu
+
                 Button("打开清单", systemImage: "sidebar.left", action: onOpenManager)
                     .labelStyle(.iconOnly)
                     .help("打开清单")
                     .accessibilityIdentifier("open-task-manager")
 
-                Button("新建提醒事项", systemImage: "plus") { open(.init()) }
+                Button("新建提醒事项", systemImage: "plus", action: openNewTask)
                     .labelStyle(.iconOnly)
                     .help("新建提醒事项")
                     .accessibilityIdentifier("quick-add-task")
@@ -104,15 +104,89 @@ struct TaskPanelView: View {
         .frame(height: 50)
     }
 
+    private var selectedList: ReminderList? {
+        store.lists.first { "list:" + $0.id == filter }
+    }
+
+    private var filterTitle: String {
+        filter == "today" ? "今天" : selectedList?.title ?? "待完成"
+    }
+
+    private var filterMenu: some View {
+        Menu {
+            filterOption("全部待办", tag: "all")
+            filterOption("今天", tag: "today")
+            if !store.lists.isEmpty {
+                Divider()
+                ForEach(store.lists) { list in
+                    filterOption("\(list.title) · \(listSourceLabel(list))", tag: "list:" + list.id)
+                }
+            }
+        } label: {
+            Label("筛选待办", systemImage: "line.3.horizontal.decrease.circle")
+                .labelStyle(.iconOnly)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("筛选待办")
+        .accessibilityIdentifier("task-panel-filter")
+    }
+
+    private func filterOption(_ title: String, tag: String) -> some View {
+        let effectiveFilter = selectedList == nil && filter != "today" ? "all" : filter
+        return Button {
+            filter = tag
+        } label: {
+            if effectiveFilter == tag {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+            }
+        }
+    }
+
+    private func visibleItems(at date: Date) -> [ReminderItem] {
+        let listID = selectedList?.id
+        let calendar = Calendar.current
+        return store.tasks.filter { item in
+            guard !item.isCompleted else { return false }
+            if filter == "today" {
+                return item.dueDate.map { calendar.isDate($0, inSameDayAs: date) } == true
+            }
+            return listID == nil || item.listID == listID
+        }
+    }
+
+    private func panelSection(_ title: String, items: [ReminderItem], at date: Date) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 5)
+                .padding(.bottom, 3)
+
+            ForEach(items) { item in
+                ReminderRow(
+                    item: item,
+                    store: store,
+                    group: DueGroup.classify(item, at: date, calendar: .current),
+                    referenceDate: date,
+                    onOpen: { open(.init(item: item)) }
+                )
+            }
+        }
+    }
+
     private var emptyState: some View {
         VStack(spacing: 11) {
             Image(systemName: "checkmark.circle")
                 .font(.system(size: 28, weight: .light))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            Text("没有待完成事项")
+            Text(filter == "today" ? "今天没有待办" : selectedList != nil ? "此清单没有待办" : "没有待完成事项")
                 .font(.callout.weight(.medium))
-            if store.access != .allowed {
+            if store.access != .allowed && selectedList == nil && filter != "today" {
                 Button("连接 Apple 提醒事项", action: onOpenManager)
                     .buttonStyle(.link)
                     .font(.callout)
@@ -120,6 +194,10 @@ struct TaskPanelView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(16)
+    }
+
+    private func openNewTask() {
+        open(.init(listID: selectedList?.isWritable == true ? selectedList?.id : nil))
     }
 
     private func open(_ request: ReminderEditorRequest) {
@@ -130,11 +208,6 @@ struct TaskPanelView: View {
     private func closeEditor() {
         editor = nil
         onEditingChanged(false)
-    }
-
-    private func perform(_ action: () throws -> Void) {
-        do { try action() }
-        catch { store.errorMessage = error.localizedDescription }
     }
 }
 
@@ -304,17 +377,21 @@ struct TaskManagerView: View {
                 } else {
                     List {
                         if selection == .completed {
-                            ForEach(items, id: \.id) { item in managerRow(item, group: nil) }
+                            ForEach(items, id: \.id) { item in managerRow(item, group: nil, at: context.date) }
                         } else {
                             ForEach(DueSection.groups(for: items.filter { !$0.isCompleted }, at: context.date)) { section in
                                 Section(section.group.title) {
-                                    ForEach(section.items, id: \.id) { item in managerRow(item, group: section.group) }
+                                    ForEach(section.items, id: \.id) { item in
+                                        managerRow(item, group: section.group, at: context.date)
+                                    }
                                 }
                             }
                             let completed = items.filter(\.isCompleted)
                             if !completed.isEmpty {
                                 Section("已完成") {
-                                    ForEach(completed, id: \.id) { item in managerRow(item, group: nil) }
+                                    ForEach(completed, id: \.id) { item in
+                                        managerRow(item, group: nil, at: context.date)
+                                    }
                                 }
                             }
                         }
@@ -358,16 +435,17 @@ struct TaskManagerView: View {
         let filtered = query.isEmpty ? candidates : candidates.filter { item in
             item.title.localizedStandardContains(query) || item.notes.localizedStandardContains(query)
                 || listSubtitle(for: item, in: store.lists).localizedStandardContains(query)
+                || item.subtasks.contains { $0.title.localizedStandardContains(query) }
         }
         return filtered.sorted { ($0.completionDate ?? .distantPast) > ($1.completionDate ?? .distantPast) }
     }
 
-    private func managerRow(_ item: ReminderItem, group: DueGroup?) -> some View {
+    private func managerRow(_ item: ReminderItem, group: DueGroup?, at date: Date) -> some View {
         ReminderRow(
             item: item,
-            subtitle: listSubtitle(for: item, in: store.lists),
+            store: store,
             group: group,
-            onToggle: { perform { try store.setCompleted(item, !item.isCompleted) } },
+            referenceDate: date,
             onOpen: { editor = .init(item: item) }
         )
         .contextMenu {
@@ -471,16 +549,35 @@ private struct PanelIconStyle: ButtonStyle {
 
 private struct ReminderRow: View {
     let item: ReminderItem
-    let subtitle: String
+    @ObservedObject var store: TaskStore
     let group: DueGroup?
-    let onToggle: () -> Void
+    let referenceDate: Date
     let onOpen: () -> Void
 
     @State private var hovering = false
+    @State private var showsSubtasks = false
+    @State private var confirmsParentCompletion = false
+
+    private var isPinned: Bool { store.pinnedTaskIDs.contains(item.id) }
+    private var completedSubtasks: Int { item.subtasks.filter(\.isCompleted).count }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            summary
+            if showsSubtasks && !item.subtasks.isEmpty {
+                subtaskRows
+            }
+        }
+        .padding(.horizontal, 2)
+        .background(.primary.opacity(hovering ? 0.065 : 0), in: .rect(cornerRadius: 7))
+        .onHover { hovering = $0 }
+    }
+
+    private var summary: some View {
         HStack(spacing: 4) {
-            Button(action: onToggle) {
+            Button {
+                perform { try store.setCompleted(item, !item.isCompleted) }
+            } label: {
                 Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 17, weight: .regular))
                     .foregroundStyle(item.isCompleted ? TaskViewColors.accent : Color.secondary)
@@ -499,10 +596,23 @@ private struct ReminderRow: View {
                             .strikethrough(item.isCompleted)
                             .foregroundStyle(item.isCompleted ? .secondary : .primary)
                             .lineLimit(1)
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                        HStack(spacing: 3) {
+                            if isPinned {
+                                Image(systemName: "pin.fill")
+                                    .accessibilityLabel("已置顶")
+                            }
+                            Text(listSubtitle(for: item, in: store.lists))
+                                .lineLimit(1)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        if let snoozedUntil = item.snoozedUntil, snoozedUntil > referenceDate, !item.isCompleted {
+                            Label("提醒推迟至 \(snoozedUntil.formatted(.dateTime.month(.defaultDigits).day().hour().minute()))",
+                                  systemImage: "bell.badge")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                     Spacer(minLength: 2)
                     if item.priority == .high {
@@ -518,16 +628,145 @@ private struct ReminderRow: View {
                             .lineLimit(1)
                     }
                 }
-                .padding(.trailing, 7)
                 .frame(minHeight: 42)
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .help(item.title)
+
+            if !item.subtasks.isEmpty {
+                Button {
+                    showsSubtasks.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("\(completedSubtasks)/\(item.subtasks.count)")
+                            .monospacedDigit()
+                        Image(systemName: showsSubtasks ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 8, weight: .semibold))
+                    }
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+                    .padding(.horizontal, 4)
+                    .frame(minHeight: 30)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .accessibilityLabel(showsSubtasks ? "折叠子任务" : "展开子任务")
+                .accessibilityValue("已完成 \(completedSubtasks) 项，共 \(item.subtasks.count) 项")
+                .help(showsSubtasks ? "折叠子任务" : "展开子任务")
+            }
+
+            if !item.isCompleted {
+                actionMenu
+            }
         }
-        .padding(.horizontal, 2)
-        .background(.primary.opacity(hovering ? 0.065 : 0), in: .rect(cornerRadius: 7))
-        .onHover { hovering = $0 }
+        .padding(.trailing, 3)
+    }
+
+    private var subtaskRows: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(item.subtasks) { subtask in
+                Button {
+                    toggleSubtask(subtask)
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: subtask.isCompleted ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(subtask.isCompleted ? TaskViewColors.accent : .secondary)
+                            .accessibilityHidden(true)
+                        Text(subtask.title)
+                            .strikethrough(subtask.isCompleted)
+                            .foregroundStyle(subtask.isCompleted ? .secondary : .primary)
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(2)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.caption)
+                    .frame(minHeight: 26)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .disabled(item.isCompleted || !item.isWritable)
+                .accessibilityLabel(subtask.isCompleted ? "恢复子任务 \(subtask.title)" : "完成子任务 \(subtask.title)")
+            }
+            if confirmsParentCompletion && completedSubtasks == item.subtasks.count && !item.isCompleted {
+                HStack(spacing: 8) {
+                    Button("完成主事项") {
+                        perform { try store.setCompleted(item, true) }
+                        confirmsParentCompletion = false
+                    }
+                    .buttonStyle(.bordered)
+                    Button("保留待办") { confirmsParentCompletion = false }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }
+                .controlSize(.small)
+                .padding(.vertical, 4)
+            }
+        }
+        .padding(.leading, 34)
+        .padding(.trailing, 6)
+        .padding(.bottom, 5)
+    }
+
+    private var actionMenu: some View {
+        Menu {
+            Button(isPinned ? "取消置顶" : "置顶到浮窗", systemImage: isPinned ? "pin.slash" : "pin") {
+                perform { try store.setPinned(item, !isPinned) }
+            }
+            if item.source == .local && item.isWritable {
+                Menu("稍后提醒", systemImage: "bell") {
+                    Button("10 分钟后") { snooze(until: Date.now.addingTimeInterval(600)) }
+                    Button("1 小时后") { snooze(until: Date.now.addingTimeInterval(3600)) }
+                    Button("明早 9:00") {
+                        let calendar = Calendar.current
+                        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: .now),
+                           let morning = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow) {
+                            snooze(until: morning)
+                        }
+                    }
+                    if item.snoozedUntil != nil {
+                        Divider()
+                        Button("取消稍后提醒") { snooze(until: nil) }
+                    }
+                }
+            }
+        } label: {
+            Label("事项操作", systemImage: "ellipsis")
+                .labelStyle(.iconOnly)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("事项操作")
+        .accessibilityLabel("事项操作 \(item.title)")
+    }
+
+    private func toggleSubtask(_ subtask: ReminderSubtask) {
+        perform {
+            let completed = !subtask.isCompleted
+            try store.setSubtaskCompleted(item, subtaskID: subtask.id, completed: completed)
+            let latest = store.tasks.first { $0.id == item.id }
+            confirmsParentCompletion = completed && latest?.subtasks.allSatisfy(\.isCompleted) == true
+        }
+    }
+
+    private func snooze(until date: Date?) {
+        perform {
+            try store.snooze(item, until: date)
+            if date != nil {
+                if store.notifications == .notDetermined {
+                    Task { await store.requestNotifications() }
+                } else if store.notifications == .denied {
+                    store.errorMessage = "已保存稍后提醒。请在系统设置中允许浮光提醒发送通知。"
+                }
+            }
+        }
+    }
+
+    private func perform(_ action: () throws -> Void) {
+        do { try action() }
+        catch { store.errorMessage = error.localizedDescription }
     }
 
     private var dateColor: Color {
@@ -565,7 +804,13 @@ private struct ReminderEditor: View {
     @State private var draft: ReminderDraft
     @State private var message: String?
     @State private var showDelete = false
+    @State private var dateWasSetManually = false
+    @State private var isSaving = false
+    @State private var showTemplateName = false
+    @State private var templateName = ""
+    @State private var templateToDelete: ReminderTemplate?
     @FocusState private var titleFocused: Bool
+    @FocusState private var focusedSubtask: UUID?
 
     init(store: TaskStore, request: ReminderEditorRequest, compact: Bool, onClose: @escaping () -> Void) {
         self.store = store
@@ -615,7 +860,7 @@ private struct ReminderEditor: View {
                 Button(request.item?.isWritable == false ? "关闭" : "取消", action: onClose)
                     .keyboardShortcut(.cancelAction)
                 if request.item?.isWritable != false {
-                    Button("保存", action: save)
+                    Button("保存") { save() }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
                         .disabled(!canSave)
@@ -637,7 +882,18 @@ private struct ReminderEditor: View {
         TextField("标题", text: $draft.title)
             .textFieldStyle(.roundedBorder)
             .focused($titleFocused)
+            .onSubmit { save() }
             .accessibilityIdentifier("task-title")
+        if let suggestion = dateSuggestion {
+            Button {
+                applyDateSuggestion(suggestion, to: &draft)
+            } label: {
+                Label(suggestionLabel(suggestion), systemImage: "calendar.badge.plus")
+                    .font(.caption)
+            }
+            .buttonStyle(.link)
+            .accessibilityIdentifier("apply-suggested-date")
+        }
         TextField("备注", text: $draft.notes, axis: .vertical)
             .lineLimit(2...4)
             .textFieldStyle(.roundedBorder)
@@ -652,6 +908,11 @@ private struct ReminderEditor: View {
             }
         }
         .accessibilityIdentifier("task-list-picker")
+        if hasSubtasksInAppleList {
+            Label("请选择本机清单以保留子任务", systemImage: "checklist")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
 
         Picker("优先级", selection: $draft.priority) {
             ForEach([ReminderPriority.none, .low, .medium, .high], id: \.self) { option in
@@ -661,6 +922,7 @@ private struct ReminderEditor: View {
         }
 
         Toggle("设定日期", isOn: Binding(get: { draft.dueDate != nil }, set: { isOn in
+            dateWasSetManually = true
             draft.dueDate = isOn ? Calendar.current.startOfDay(for: .now) : nil
             if !isOn {
                 draft.hasTime = false
@@ -694,6 +956,174 @@ private struct ReminderEditor: View {
                 if request.item?.repeatRule == .custom { Text(ReminderRepeat.custom.label).tag(ReminderRepeat.custom) }
             }
         }
+
+        if selectedList?.source == .local {
+            subtaskSection
+        }
+    }
+
+    private var dateSuggestion: QuickEntryParser.Result? {
+        guard request.item == nil, draft.dueDate == nil, !dateWasSetManually else { return nil }
+        return QuickEntryParser.parse(draft.title)
+    }
+
+    private func suggestionLabel(_ suggestion: QuickEntryParser.Result) -> String {
+        let style = Date.FormatStyle.dateTime.month(.defaultDigits).day()
+        let date = suggestion.date.formatted(suggestion.hasTime ? style.hour().minute() : style)
+        return "采用 \(date)"
+    }
+
+    private func applyDateSuggestion(_ suggestion: QuickEntryParser.Result, to draft: inout ReminderDraft) {
+        draft.title = suggestion.title
+        draft.dueDate = suggestion.date
+        draft.hasTime = suggestion.hasTime
+        draft.alerts = suggestion.hasTime
+    }
+
+    private var subtaskSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Divider().padding(.vertical, 2)
+            HStack {
+                Text("子任务")
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                templateMenu
+            }
+
+            ForEach($draft.subtasks) { $subtask in
+                let id = subtask.id
+                HStack(spacing: 7) {
+                    Toggle("完成子任务", isOn: $subtask.isCompleted)
+                        .toggleStyle(.checkbox)
+                        .labelsHidden()
+                        .accessibilityLabel(subtask.title.isEmpty ? "完成子任务" : "完成 \(subtask.title)")
+                    TextField("子任务标题", text: $subtask.title)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focusedSubtask, equals: id)
+                        .accessibilityIdentifier("subtask-title")
+                    Image(systemName: "line.3.horizontal")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 2)
+                        .contentShape(Rectangle())
+                        .draggable(id.uuidString)
+                        .help("拖动排序")
+                        .accessibilityHidden(true)
+                    subtaskMenu(id)
+                }
+                .dropDestination(for: String.self) { values, _ in
+                    guard let value = values.first, let sourceID = UUID(uuidString: value) else { return false }
+                    return moveSubtask(sourceID, to: id)
+                }
+            }
+
+            HStack {
+                Button("添加子任务", systemImage: "plus", action: addSubtask)
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("add-subtask")
+                if let parent = parentReadyToComplete {
+                    Spacer()
+                    Button("保存并完成主事项", systemImage: "checkmark.circle") { save(completing: parent) }
+                        .buttonStyle(.borderless)
+                        .disabled(!canSave)
+                }
+            }
+        }
+        .alert("存为子任务模板", isPresented: $showTemplateName) {
+            TextField("模板名称", text: $templateName)
+            Button("保存", action: saveTemplate)
+            Button("取消", role: .cancel) {}
+        }
+        .confirmationDialog("删除子任务模板？", isPresented: Binding(
+            get: { templateToDelete != nil },
+            set: { if !$0 { templateToDelete = nil } }
+        ), titleVisibility: .visible, presenting: templateToDelete) { template in
+            Button("删除 \(template.name)", role: .destructive) { deleteTemplate(template) }
+            Button("取消", role: .cancel) {}
+        }
+    }
+
+    private var templateMenu: some View {
+        Menu {
+            if !store.templates.isEmpty {
+                Menu("添加模板步骤") {
+                    ForEach(store.templates) { template in
+                        Button(template.name) { draft.subtasks.append(contentsOf: template.newSubtasks()) }
+                    }
+                }
+            }
+            Button("将当前步骤存为模板") {
+                templateName = ""
+                showTemplateName = true
+            }
+            .disabled(!draft.subtasks.contains { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+            if !store.templates.isEmpty {
+                Menu("删除模板") {
+                    ForEach(store.templates) { template in
+                        Button(template.name, role: .destructive) { templateToDelete = template }
+                    }
+                }
+            }
+        } label: {
+            Label("模板", systemImage: "list.bullet.rectangle")
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityIdentifier("subtask-templates")
+    }
+
+    private func subtaskMenu(_ id: UUID) -> some View {
+        let index = draft.subtasks.firstIndex { $0.id == id }
+        return Menu {
+            Button("上移", systemImage: "arrow.up") { shiftSubtask(id, by: -1) }
+                .disabled(index == nil || index == 0)
+            Button("下移", systemImage: "arrow.down") { shiftSubtask(id, by: 1) }
+                .disabled(index == nil || index == draft.subtasks.indices.last)
+            Divider()
+            Button("删除子任务", systemImage: "trash", role: .destructive) {
+                draft.subtasks.removeAll { $0.id == id }
+            }
+        } label: {
+            Label("子任务操作", systemImage: "ellipsis")
+                .labelStyle(.iconOnly)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("子任务操作")
+    }
+
+    private func addSubtask() {
+        let item = ReminderSubtask(title: "")
+        draft.subtasks.append(item)
+        focusedSubtask = item.id
+    }
+
+    private func shiftSubtask(_ id: UUID, by offset: Int) {
+        guard let index = draft.subtasks.firstIndex(where: { $0.id == id }),
+              draft.subtasks.indices.contains(index + offset) else { return }
+        draft.subtasks.swapAt(index, index + offset)
+    }
+
+    private func moveSubtask(_ sourceID: UUID, to targetID: UUID) -> Bool {
+        guard sourceID != targetID,
+              let source = draft.subtasks.firstIndex(where: { $0.id == sourceID }),
+              let target = draft.subtasks.firstIndex(where: { $0.id == targetID }) else { return false }
+        let item = draft.subtasks.remove(at: source)
+        draft.subtasks.insert(item, at: target)
+        return true
+    }
+
+    private func saveTemplate() {
+        let steps = draft.subtasks.filter { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        do { try store.createTemplate(name: templateName, subtasks: steps) }
+        catch { message = error.localizedDescription }
+    }
+
+    private func deleteTemplate(_ template: ReminderTemplate) {
+        do { try store.deleteTemplate(template) }
+        catch { message = error.localizedDescription }
     }
 
     private var dueDateBinding: Binding<Date> {
@@ -705,20 +1135,50 @@ private struct ReminderEditor: View {
         return store.lists.filter { $0.source == item.source && ($0.isWritable || $0.id == item.listID) }
     }
 
-    private var canSave: Bool {
-        !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && availableLists.contains { $0.id == draft.listID && $0.isWritable }
+    private var selectedList: ReminderList? {
+        availableLists.first { $0.id == draft.listID }
     }
 
-    private func save() {
+    private var hasSubtasksInAppleList: Bool {
+        selectedList?.source == .apple && draft.subtasks.contains {
+            !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private var canSave: Bool {
+        !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && selectedList?.isWritable == true && !hasSubtasksInAppleList
+    }
+
+    private var parentReadyToComplete: ReminderItem? {
+        guard let item = request.item, !item.isCompleted,
+              item.subtasks.contains(where: { !$0.isCompleted }),
+              !draft.subtasks.isEmpty, draft.subtasks.allSatisfy(\.isCompleted) else { return nil }
+        return item
+    }
+
+    private func save(completing parent: ReminderItem? = nil) {
+        guard canSave, !isSaving else { return }
+        if selectedList?.source == .local,
+           draft.subtasks.contains(where: { $0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+            message = "请填写或移除空白子任务。"
+            return
+        }
+        isSaving = true
+        var savedDraft = draft
+        if let suggestion = dateSuggestion { applyDateSuggestion(suggestion, to: &savedDraft) }
+        if selectedList?.source != .local { savedDraft.subtasks = [] }
         do {
-            try store.save(draft)
-            if draft.alerts && store.notifications == .notDetermined,
-               availableLists.first(where: { $0.id == draft.listID })?.source == .local {
+            try store.save(savedDraft)
+            if let parent { try store.setCompleted(parent, true) }
+            if savedDraft.alerts && store.notifications == .notDetermined, selectedList?.source == .local {
                 Task { await store.requestNotifications() }
             }
             onClose()
-        } catch { message = error.localizedDescription }
+        } catch {
+            isSaving = false
+            message = error.localizedDescription
+        }
     }
 
     private func delete() {
