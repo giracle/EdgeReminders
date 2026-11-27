@@ -443,7 +443,7 @@ struct TaskManagerView: View {
                                 }
                             }
                     }
-                    Button("新建智能清单", systemImage: "plus") { smartListEditor = .init() }
+                    Button("新建智能清单", systemImage: "plus") { smartListEditor = true }
                         .buttonStyle(.plain)
                         .foregroundStyle(TaskViewColors.accent)
                         .accessibilityIdentifier("add-smart-list")
