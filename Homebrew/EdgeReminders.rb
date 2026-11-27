@@ -1,6 +1,6 @@
 cask "edge-reminders" do
   version "0.5.0"
-  sha256 "2f4cf67b1073027533512342f27d5b87b988876a09970e6137cd3e67d939ed46"
+  sha256 "17a64d69ba479064cf6da20fc1612c1dd1dd12a6083bfef8dbf6f81b5ba45be7"
 
   url "https://github.com/giracle/EdgeReminders/releases/download/v#{version}/EdgeReminders-#{version}-macOS-universal.dmg"
   name "浮光提醒"

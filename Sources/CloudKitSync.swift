@@ -1,6 +1,7 @@
 import CloudKit
 import Combine
 import Foundation
+import Security
 
 /// 手动 CloudKit 同步：把本机清单整包推到私有数据库，另一台设备拉回恢复。
 /// 冲突策略为「最后写入获胜」，记录里带时间戳用于比较。
@@ -31,11 +32,13 @@ final class CloudKitSync: ObservableObject {
     private enum SyncError: LocalizedError {
         case noAccount
         case unknown
+        case notEntitled
 
         var errorDescription: String? {
             switch self {
             case .noAccount: "iCloud 账号不可用。请在系统设置中登录 iCloud 后再试。"
             case .unknown: "无法确认 iCloud 状态，请稍后重试。"
+            case .notEntitled: "当前构建未启用 iCloud 容器授权，同步不可用。请用你自己的开发者账号签名（见 README）。"
             }
         }
     }
@@ -43,6 +46,16 @@ final class CloudKitSync: ObservableObject {
     static let defaultContainerID = "iCloud.local.fuguang.EdgeReminders"
     private static let recordType = "fuguang.localdata.v1"
     private static let recordName = "main"
+    private static let containerEntitlement = "com.apple.developer.icloud-container-identifiers"
+
+    /// 未授权时 CKContainer 会抛 ObjC 异常直接崩溃，所以先检查自身 entitlements。
+    private var hasContainerEntitlement: Bool {
+        let wanted = containerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(task, Self.containerEntitlement as CFString, nil),
+              let identifiers = value as? [String] else { return false }
+        return identifiers.contains(wanted)
+    }
 
     init(store: TaskStore, defaults: UserDefaults = .standard) {
         self.store = store
@@ -65,6 +78,10 @@ final class CloudKitSync: ObservableObject {
     }
 
     func refreshAuthorization() async {
+        guard hasContainerEntitlement else {
+            status = .failed(SyncError.notEntitled.localizedDescription)
+            return
+        }
         do {
             switch try await makeContainer().accountStatus() {
             case .available:
@@ -82,6 +99,7 @@ final class CloudKitSync: ObservableObject {
     }
 
     private func readyDatabase() async throws -> CKDatabase {
+        guard hasContainerEntitlement else { throw SyncError.notEntitled }
         let container = makeContainer()
         switch try await container.accountStatus() {
         case .available:
