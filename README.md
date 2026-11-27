@@ -1,74 +1,212 @@
 # 浮光提醒 · EdgeReminders
 
-浮光提醒是一款原生 macOS 提醒事项应用。它把 Apple 提醒事项和本机待办放在同一个浮窗里，支持拖放收集资料、拆分任务和专注计时。工作时可以把待办收进屏幕边缘，需要时用鼠标唤出。
+一个常驻屏幕边缘的原生 macOS 提醒事项应用。把 Apple 提醒事项和本机待办放进同一个浮窗：贴边收起、鼠标唤出，拖放收集资料，拆分子任务，专注计时。所有数据都在你自己的 Mac 和 iCloud 里。
 
-## 安装与快速上手
+[![macOS](https://img.shields.io/badge/macOS-15%2B-black?logo=apple)](https://github.com/giracle/EdgeReminders/releases)
+[![Universal](https://img.shields.io/badge/universal-arm64%20%7C%20x86__64-blue)](https://github.com/giracle/EdgeReminders/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/giracle/EdgeReminders?display_name=tag)](https://github.com/giracle/EdgeReminders/releases)
 
-需要 **macOS 15 或更高版本**。通用安装包同时支持 Apple 芯片和 Intel Mac。
+![浮窗](showcase/preview/preview_hero.png)
 
-1. 下载 `EdgeReminders-<版本>-macOS-universal.dmg`，打开后把 `EdgeReminders.app` 拖到「应用程序」，再从那里启动。[GitHub Releases](https://github.com/giracle/EdgeReminders/releases)
-2. 点击浮窗右上角的「打开清单」。需要使用已有清单时，选择「连接 Apple 提醒事项」并授予完全访问权限。也可以直接新建本机清单。
-3. 拖动浮窗左上方的标题区域。靠近屏幕上、下、左、右任一可用边缘时，会出现贴边提示，松手后浮窗收起。鼠标在可用边缘短暂停留即可展开，多显示器之间的相邻边界除外。
-4. 菜单栏的浮光提醒图标可显示或收起浮窗。退出应用时，从菜单栏选择「退出浮光提醒」，也可以点击待办浮窗右上角的电源按钮。
+![演示](showcase/assets/demo.gif)
 
-测试版采用临时签名，尚未经过 Apple 公证。macOS 可能拦截从网上下载的安装包。可在下载目录运行 `shasum -a 256 -c EdgeReminders-<版本>-macOS-universal.dmg.sha256` 校验镜像，请将 `<版本>` 换成对应版本号。
+## 为什么做它
 
-## 常见使用场景
+提醒事项类应用不缺，缺的是「不打断你」的那种。浮光提醒把待办做成一片可以贴在屏幕边缘的玻璃：需要时滑出，处理完收起，不会在你写代码、写文档的时候抢走一个窗口。它同时管 Apple 提醒事项和本机清单，拖进去的网页、文件、文字会自动变成待办。
 
-### 安排今天的工作
+- **贴边不打扰**：拖到屏幕任意边缘收起，鼠标停留即展开。
+- **收集零摩擦**：拖放、剪贴板、命令行、快捷指令、本地 HTTP 五个入口。
+- **计划有结构**：标签、前置依赖、智能清单、自然语言搜索、撤销重做。
+- **专注可回看**：专注计时带日志和统计，计时浮窗下方有呼吸氛围光。
+- **数据自己拿**：CSV / Markdown / JSON 导出，整库备份与恢复，可手动同步到自己的 iCloud。
 
-按 `Control + Shift + N`，或点浮窗的加号。输入「明天下午 3 点给客户回电话」，点出现的日期建议，核对标题和时间后保存。浮窗可筛选「今天」或指定清单，可以把重要事项置顶。需要找旧任务时，在管理清单窗口搜索，或从「已完成」中恢复。临时有事时，可以给未完成的本机事项选「稍后提醒」，从 10 分钟后、1 小时后或明早中选择，原截止日期保留。
+## 功能
 
-### 拆分有多个步骤的任务
+### 浮窗与视觉
 
-在本机事项「发布周报」的详情里添加「汇总数据」「起草」「发给同事」等子任务。回到浮窗点击子任务进度，展开后逐项勾选。全部勾完时，可以确认完成父事项。经常执行的步骤可以存成模板。若将事项设为每周重复，下一轮会沿用步骤并重新开始计数。
+- 玻璃浮窗贴边动画，多显示器相邻边界不会误触。
+- 五种主题色（浮光青 / 深海蓝 / 暖阳橙 / 暮山紫 / 胭脂粉），面板透明度可调。
+- 完成事项时的小粒子庆祝（可关）、可选的彩虹细线。
+- 计时窗口翻牌数字，专注运行时背景有缓慢呼吸的氛围光。
+- macOS 26 使用原生 Liquid Glass，macOS 15 使用系统半透明材质，遵循「减少动态效果」。
 
-### 收集网页、文件和文字
+### 收集输入
 
-把 Safari 的网页链接、Finder 的文件或文件夹，或者其他应用中选中的可拖动文字，拖进待办浮窗。看到「放入收件箱」后松手，每次拖放会在本机「收件箱」产生一条待办。链接和文件会成为关联资料，拖入的正文会保存在备注中。浮窗已收起时，可拖到可用边缘稍作停留。来源应用未能触发边缘唤出时，先从菜单栏显示浮窗，再拖入资料。
-
-### 从上次停下的位置继续工作
-
-打开事项详情，点「添加资料」关联文档或网页。下次处理这条待办时，点「继续」同时打开关联资料，也可以从事项操作菜单选「继续并开始计时」。至少有一份资料成功打开时，应用会尝试按当前专注时长开始计时。已有计时在运行或暂停时，会打开当前计时。文件以引用保存，原文件仍留在 Finder 中。
-
-### 给工作或休息设一个时限
-
-写作或复习时，点击未完成事项右侧的计时按钮，按当前专注时长开始并关联这条事项。泡茶或开会前，可以从菜单栏或浮窗打开「计时」，切换到「普通倒计时」，填写 1 至 180 分钟。专注计时默认 25 分钟，普通倒计时默认 15 分钟。专注结束后可手动开始休息。
-
-计时运行时只显示翻牌数字。拖动数字可移动窗口，贴边也会继续显示。轻点数字可暂停、继续或结束。鼠标移到窗口上才会出现关闭按钮，关闭窗口后计时继续，可通过「计时」重新打开。运行中或暂停的计时也可在重启应用后恢复。
-
-应用运行时，到点会在计时器所在屏幕播放 6.6 pt 彩虹光带，从右上角顺时针绕两圈，每圈 10 秒，随后渐隐。菜单栏的「预览到点彩虹」可立即播放。系统开启「减少动态效果」时，会显示短暂的静态边框。
-
-## 同步、权限与系统兼容性
-
-| 功能 | 数据和权限 |
+| 入口 | 用法 |
 | --- | --- |
-| Apple 提醒事项 | 授权完全访问后可读取现有清单，并在可写清单中新增、编辑和勾选。iCloud 清单仍通过登录的 Apple 账户同步，提醒由系统「提醒事项」发出。 |
-| 本机事项 | 本机清单、子任务、模板、稍后提醒和拖放收件箱保存在当前 Mac。事项可在同一来源的可写清单之间移动。 |
-| 资料与计时 | 关联资料、置顶设置和计时进度保存在当前 Mac。要接收本机事项和计时的系统通知，请在系统设置中允许浮光提醒发送通知。 |
-| 玻璃与水波 | macOS 26 及以上使用原生 Liquid Glass，macOS 15 使用系统半透明材质。动效遵循系统「减少动态效果」设置。本版已在 macOS 15.7.4 构建并运行。 |
+| 拖放 | 把链接、文件、文字拖到浮窗或屏幕边缘 |
+| 剪贴板 | 开启后复制文本/链接自动进收件箱（可在设置关闭） |
+| 全局快捷键 | `Control + Shift + N` 唤起新增 |
+| 命令行 | `er add "明天十点交周报"` |
+| 本地 HTTP | `POST http://127.0.0.1:8742/inbox` |
+| 快捷指令 / Siri | 「把……记到浮光提醒」 |
+
+### 计划
+
+- 本机清单与 Apple 提醒事项统一管理，可写清单里新增、编辑、勾选。
+- 子任务：进度展开勾选、模板、拖动排序；全部勾完可一键完成父事项。
+- 标签（`#工作 #面试`）与前置依赖：未满足前置的事项显示阻塞标记。
+- 智能清单：按标签、优先级、逾期、N 天内到期、无日期、清单自动聚合，可自定义规则。
+- 自然语言搜索：`#面试`、`明天`、`紧急`、关键词混着打。
+- 即将到期视图（14 天分组）、归档、批量选择、撤销 / 重做。
+- 重复事项：每天 / 每周 / 每月 / 每年 / 自定义。
+
+### 专注
+
+- 专注计时（番茄式）与普通倒计时，1–180 分钟。
+- 计时日志自动记录：近 7 天专注时长与轮数、累计时长、活跃天数。
+- 从待办直接开始计时，结束自动回到事项；「继续」会同时打开关联资料。
+
+### 同步
+
+- 手动 CloudKit 同步：把本机清单整包推送到自己的私有 iCloud 数据库，另一台 Mac 拉回恢复。
+- 冲突策略为最后写入获胜，界面上会显示上次同步时间。
+
+### 智能（Pro）
+
+- AI 拆子任务：在事项详情点「AI 拆解」，模型返回 2–6 条可执行步骤。
+- AI 周报：统计页一键生成本周简报（任务 + 专注数据）。
+- 支持任意 OpenAI 兼容接口：OpenAI、DeepSeek、Ollama 等；Key 保存在系统钥匙串。
+
+### 数据与集成
+
+- 导出 CSV / Markdown / JSON；整库备份与恢复（`.json` 备份，可跨设备）。
+- 统计页：近 14 天完成柱状图、待办/已完成/逾期/连续完成、按清单与标签分布。
+- 一键把事项写入 Apple 日历（1 小时事件 + 到点提醒）。
+- 检查更新：从 GitHub Releases 拉取最新版本，可在设置里关闭。
+
+## 安装
+
+需要 **macOS 15 或更高版本**，通用安装包同时支持 Apple 芯片和 Intel。
+
+**方式一：安装包**（推荐）
+
+1. 从 [GitHub Releases](https://github.com/giracle/EdgeReminders/releases) 下载 `EdgeReminders-<版本>-macOS-universal.dmg`。
+2. 打开镜像，把 `EdgeReminders.app` 拖到「应用程序」，再从应用程序文件夹启动。
+3. 点击浮窗右上角「打开清单」开始配置；需要读取现有清单时连接 Apple 提醒事项。
+
+**方式二：Homebrew**
+
+```sh
+brew install --cask giracle/tap/edge-reminders
+```
+
+暂时还没有官方 tap 收录，也可以下载仓库里的 `Homebrew/EdgeReminders.rb` 后本地安装：
+
+```sh
+brew install --cask ./Homebrew/EdgeReminders.rb
+```
+
+**方式三：命令行工具 er**
+
+安装镜像里附带 `er` 可执行文件；运行镜像中的「安装命令行工具.command」即可装到 `/usr/local/bin/er`。也可以从源码构建：
+
+```sh
+xcodebuild -project EdgeReminders.xcodeproj -target er -configuration Release SYMROOT="$PWD/build/er" build
+sudo cp build/er/Release/er /usr/local/bin/er
+```
+
+> 测试版采用临时签名，尚未 Apple 公证，首次启动可能被 macOS 拦截。可在「系统设置 → 隐私与安全性」里选择「仍要打开」，或运行 `xattr -dr com.apple.quarantine /Applications/EdgeReminders.app`。镜像校验：`shasum -a 256 -c EdgeReminders-<版本>-macOS-universal.dmg.sha256`。
+
+## 截图
+
+| 浮窗 | 计时 |
+| --- | --- |
+| ![浮窗](showcase/assets/panel-clean.png) | ![计时](showcase/assets/timer-chip.png) |
+
+| 管理清单 | 拖放收集 |
+| --- | --- |
+| ![清单](showcase/preview/preview_full.png) | ![拖放](showcase/preview/preview_drag.png) |
+
+## 快捷键
+
+| 操作 | 快捷键 |
+| --- | --- |
+| 快速新增 | `Control + Shift + N` |
+| 打开管理清单 | 菜单栏 → 管理清单（`⌘M`） |
+| 搜索（管理清单） | `⌘F` 或在搜索框输入 |
+| 撤销 / 重做 | `⌘Z` / `⇧⌘Z` |
+| 新建事项 | `⌘N` |
+| 保存事项 | `Return` |
+
+## 命令行 er
+
+```sh
+er add "明天下午三点交周报" --tag 工作 --priority high
+er add "整理面试题库" --due "2026-12-01 10:00"
+er list            # 今天到期的待办
+er list --all      # 全部未完成
+er done 周报        # 按标题或 ID 前缀完成
+er report          # 一行摘要：待办/今天/逾期/近 7 天完成
+```
+
+`er` 直接读写应用的数据文件并通知运行中的应用重载，不需要开第二个进程。数据路径：`~/Library/Application Support/local.fuguang.EdgeReminders/Reminders.json`。
+
+## 本地 HTTP 收件箱
+
+浮光提醒在 `127.0.0.1:8742` 上提供最小 HTTP 接口（只监听回环地址，需 Token 校验，Token 在设置里查看）：
+
+```sh
+curl -X POST http://127.0.0.1:8742/inbox \
+  -H "X-Fuguang-Token: <你的 token>" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"阅读那篇论文","notes":"周五前","resources":["https://example.com/paper"]}'
+
+curl http://127.0.0.1:8742/health   # {"ok":true,"app":"fuguang-reminders"}
+```
+
+**邮件转待办**：任意支持 webhook 的邮件服务 / 快捷指令，把邮件标题 POST 到上面的 `/inbox` 即可进入收件箱。
+
+## 同步（CloudKit）
+
+同步是手动、可预期的：设置里填 CloudKit 容器 ID（默认 `iCloud.local.fuguang.EdgeReminders`），点「上传本机数据」或「从云端恢复」。
+
+要真正启用需要你自己的 Apple 开发者账号：
+
+1. 在 [Apple Developer](https://developer.apple.com/account/resources/identifiers/list/cloudKitContainers) 创建一个 CloudKit 容器，ID 形如 `iCloud.<你的 Bundle ID>`。
+2. 在 Xcode 里给 EdgeReminders target 勾选 iCloud → CloudKit，并把 `Resources/EdgeReminders.entitlements` 设为 `CODE_SIGN_ENTITLEMENTS`。
+3. 用你的开发团队签名后运行，同步即可用。
+
+临时签名版本没有 iCloud 授权，同步界面会明确提示，不影响其他功能。
 
 ## 本地构建
 
-需要 **Xcode 26 或更高版本**以及 Metal 工具链。缺少 Metal 工具链时，用以下命令下载组件。
+需要 **Xcode 26 或更高版本**和 Metal 工具链（缺少时运行 `xcodebuild -downloadComponent MetalToolchain`）。
 
 ```sh
-xcodebuild -downloadComponent MetalToolchain
+xcodebuild -project EdgeReminders.xcodeproj -scheme EdgeReminders \
+  -configuration Release -destination 'generic/platform=macOS' \
+  ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO -derivedDataPath build/DerivedData build
 ```
 
-用 Xcode 打开 `EdgeReminders.xcodeproj`，选择 `EdgeReminders` 运行。在仓库根目录运行打包脚本可生成通用版。
+打包通用版安装镜像（含 SHA-256 校验文件，输出到 `dist/`）：
 
 ```sh
 ./scripts/package.sh
 ```
 
-安装镜像与 SHA-256 文件位于 `dist/`。本机配置好 Developer ID Application 证书与 `notarytool` 钥匙串配置后，可生成已签名、公证并装订票据的安装包。
+配置 Developer ID 证书与 notarytool 后可产出已签名、公证并装订票据的安装包：
 
 ```sh
 DEVELOPER_ID_APPLICATION='Developer ID Application: Your Name (TEAMID)' \
 NOTARYTOOL_PROFILE='your-keychain-profile' ./scripts/package.sh
 ```
 
+## 测试
+
+仓库带一组无依赖的检查程序（`Tests/`），直接当可执行文件构建运行：
+
+```sh
+xcrun swiftc Sources/*.swift Tests/TaskStoreChecks.swift -o /tmp/checks && /tmp/checks
+```
+
+## 贡献
+
+欢迎 issue 和 PR。功能建议请先开 issue 描述使用场景；提交 PR 前请跑一遍上面的检查程序，并保持 `SWIFT_TREAT_WARNINGS_AS_ERRORS=YES` 下无警告。
+
+如果浮光提醒帮到了你，欢迎 [赞助支持](https://github.com/sponsors/giracle) 或点一个 Star。
+
 ## 许可证
 
-项目源代码采用 [Apache License 2.0](LICENSE)。应用图标由用户提供，随应用分发。
+源代码采用 [Apache License 2.0](LICENSE)。应用图标由用户提供，随应用分发。

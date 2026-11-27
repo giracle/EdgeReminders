@@ -17,7 +17,7 @@ enum EdgeRemindersApp {
 
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-    private let store = TaskStore()
+    private let store = TaskStore.shared
     private let focusTimer = FocusTimer()
     private let timerCompletionBorder = TimerCompletionBorder()
     private var timerPanel: FocusTimerPanelController?
@@ -25,6 +25,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
     private var timerCompletionObservation: AnyCancellable?
     private var floating: FloatingPanelController?
     private var globalQuickAdd: GlobalQuickAdd?
+    private var clipboardCapture: ClipboardCapture?
+    private var httpInbox: LocalHTTPInbox?
+    private var cancellables = Set<AnyCancellable>()
     private var manager: NSWindow?
     private var statusItem: NSStatusItem?
 
@@ -56,8 +59,85 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
         updateStatusTimer()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(refreshTimer),
                                                            name: NSWorkspace.didWakeNotification, object: nil)
+        installClipboardCapture()
+        installHTTPInbox()
+        installExternalReloadObserver()
+        if AppPreferences.shared.autoCheckUpdates { checkForUpdates(automatic: true) }
         floating?.show()
         timerPanel?.restoreIfNeeded()
+    }
+
+    private func installHTTPInbox() {
+        let inbox = LocalHTTPInbox(store: store)
+        inbox.start()
+        httpInbox = inbox
+    }
+
+    private func installExternalReloadObserver() {
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(reloadLocalData),
+            name: Notification.Name("EdgeReminders.reload"),
+            object: nil
+        )
+    }
+
+    @objc private func reloadLocalData() {
+        store.reloadLocal()
+    }
+
+    @objc private func checkForUpdates(automatic: Bool = false) {
+        Task {
+            let result = await UpdateChecker.checkCurrent()
+            switch result {
+            case .success(let update):
+                guard let update else {
+                    if !automatic { store.errorMessage = "已经是最新版本。" }
+                    return
+                }
+                let alert = NSAlert()
+                alert.messageText = "发现新版本 \(update.version)"
+                alert.informativeText = "前往 GitHub Release 下载。"
+                alert.addButton(withTitle: "打开")
+                alert.addButton(withTitle: "稍后")
+                let url = URL(string: update.htmlURL)
+                if let host = manager ?? NSApp.keyWindow {
+                    alert.beginSheetModal(for: host) { response in
+                        if response == .alertFirstButtonReturn, let url { NSWorkspace.shared.open(url) }
+                    }
+                } else {
+                    let response = alert.runModal()
+                    if response == .alertFirstButtonReturn, let url { NSWorkspace.shared.open(url) }
+                }
+            case .failure(let error):
+                if !automatic { store.errorMessage = "检查更新失败：\(error.localizedDescription)" }
+            }
+        }
+    }
+
+    private func installClipboardCapture() {
+        let capture = ClipboardCapture(store: store)
+        capture.onCaptured = { [weak self] title in self?.showCapturedNotification(title) }
+        clipboardCapture = capture
+        if AppPreferences.shared.clipboardAutoCapture { capture.start() }
+        AppPreferences.shared.$clipboardAutoCapture
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak capture] enabled in
+                if enabled { capture?.start() } else { capture?.stop() }
+            }
+            .store(in: &cancellables)
+    }
+
+    private func showCapturedNotification(_ title: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "已剪藏到收件箱"
+        content.body = String(title.prefix(60))
+        let request = UNNotificationRequest(
+            identifier: "clipboard-capture.\(Date.now.timeIntervalSince1970)",
+            content: content, trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -193,6 +273,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
         barMenu.addItem(menuItem("预览到点彩虹", #selector(previewTimerCompletion)))
         barMenu.addItem(.separator())
         barMenu.addItem(menuItem("管理清单…", #selector(showManager), key: "m"))
+        barMenu.addItem(menuItem("检查更新…", #selector(checkForUpdates)))
         barMenu.addItem(.separator())
         barMenu.addItem(withTitle: "退出浮光提醒", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         barItem.menu = barMenu

@@ -5,6 +5,7 @@ import SwiftUI
 struct TaskPanelView: View {
     @ObservedObject var store: TaskStore
     @ObservedObject var quickAdd: PanelQuickAdd
+    @ObservedObject var prefs = AppPreferences.shared
     let onOpenManager: () -> Void
     let onOpenTimer: () -> Void
     let onQuit: () -> Void
@@ -15,15 +16,31 @@ struct TaskPanelView: View {
 
     @AppStorage("floatingPanel.filter") private var filter = "all"
     @State private var editor: ReminderEditorRequest?
+    @State private var isSearching = false
+    @State private var panelQuery = ""
+    @State private var searchSelection = 0
+    @State private var burstID: UUID?
+    @FocusState private var searchFocused: Bool
+
+    private var panelSearchResults: [ReminderItem] {
+        store.search(panelQuery, at: .now)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            if isSearching {
+                searchHeader
+            } else {
+                header
+            }
             Divider().overlay(.primary.opacity(0.07))
+            if prefs.rainbowHairline { RainbowHairline() }
 
             if let editor {
                 ReminderEditor(store: store, request: editor, compact: true, onClose: closeEditor)
                     .id(editor.id)
+            } else if isSearching {
+                searchResults
             } else {
                 TimelineView(.everyMinute) { context in
                     let items = visibleItems(at: context.date)
@@ -58,9 +75,109 @@ struct TaskPanelView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .tint(TaskViewColors.accent)
+        .overlay(alignment: .top) {
+            if let burstID {
+                CelebrationBurst(color: TaskViewColors.accent)
+                    .id(burstID)
+                    .offset(y: 30)
+                    .task(id: burstID) {
+                        do { try await Task.sleep(for: .seconds(1.1)) } catch { return }
+                        if self.burstID == burstID { self.burstID = nil }
+                    }
+            }
+        }
         .onChange(of: quickAdd.requestID) {
             if editor == nil { openNewTask() }
         }
+        .onMoveCommand { direction in
+            guard isSearching, editor == nil, !panelSearchResults.isEmpty else { return }
+            searchSelection = (searchSelection + (direction == .down ? 1 : -1) + panelSearchResults.count) % panelSearchResults.count
+        }
+        .onChange(of: store.lastCompletedID) {
+            guard store.lastCompletedID != nil else { return }
+            burstID = UUID()
+            if prefs.soundEnabled, let sound = NSSound(named: NSSound.Name(prefs.completionSound)) {
+                sound.play()
+            }
+        }
+    }
+
+    private var searchHeader: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            TextField("搜索：事项、#标签、日期、优先级…", text: $panelQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .focused($searchFocused)
+                .onSubmit { openSelectedSearchResult() }
+                .onExitCommand { endSearch() }
+            if !panelQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text("\(panelSearchResults.count) 项")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Button("结束搜索", systemImage: "xmark.circle.fill") { endSearch() }
+                .labelStyle(.iconOnly)
+                .help("结束搜索")
+        }
+        .buttonStyle(PanelIconStyle())
+        .padding(.leading, 18)
+        .padding(.trailing, 12)
+        .frame(height: 50)
+        .task { searchFocused = true }
+    }
+
+    private var searchResults: some View {
+        Group {
+            if panelSearchResults.isEmpty {
+                VStack(spacing: 11) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 28, weight: .light))
+                        .foregroundStyle(.secondary)
+                    Text(panelQuery.trimmingCharacters(in: .whitespaces).isEmpty ? "输入关键词开始搜索" : "未找到事项")
+                        .font(.callout.weight(.medium))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(16)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(panelSearchResults.enumerated()), id: \.element.id) { index, item in
+                            ReminderRow(
+                                item: item,
+                                store: store,
+                                group: DueGroup.classify(item, at: .now, calendar: .current),
+                                referenceDate: .now,
+                                onOpen: { open(.init(item: item)) },
+                                onFocus: { searchSelection = index; onFocusTask(item) },
+                                onStartTimer: { onStartTaskTimer(item) },
+                                onContinue: { onContinueTask(item, $0) }
+                            )
+                            .background(index == searchSelection ? Color.accentColor.opacity(0.14) : .clear,
+                                      in: .rect(cornerRadius: 7))
+                        }
+                    }
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 10)
+                }
+                .scrollIndicators(.never)
+                .defaultScrollAnchor(.top)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: panelQuery)
+    }
+
+    private func openSelectedSearchResult() {
+        guard panelSearchResults.indices.contains(searchSelection) else { return }
+        open(.init(item: panelSearchResults[searchSelection]))
+    }
+
+    private func endSearch() {
+        isSearching = false
+        panelQuery = ""
+        searchSelection = 0
     }
 
     private var header: some View {
@@ -86,6 +203,13 @@ struct TaskPanelView: View {
             Spacer(minLength: 8)
 
             if editor == nil {
+                Button("搜索", systemImage: "magnifyingglass") {
+                    isSearching = true
+                }
+                .labelStyle(.iconOnly)
+                .help("搜索事项")
+                .accessibilityIdentifier("panel-search")
+
                 filterMenu
 
                 Button("计时", systemImage: "timer", action: onOpenTimer)
@@ -232,6 +356,7 @@ struct TaskPanelView: View {
 @MainActor
 struct TaskManagerView: View {
     @ObservedObject var store: TaskStore
+    @ObservedObject var prefs = AppPreferences.shared
     let onFocusTask: (ReminderItem) -> Void
     let onStartTaskTimer: (ReminderItem) -> Void
     let onContinueTask: (ReminderItem, Bool) -> Void
@@ -240,7 +365,12 @@ struct TaskManagerView: View {
     @State private var search = ""
     @State private var editor: ReminderEditorRequest?
     @State private var listEditor: ListEditorRequest?
+    @State private var smartListEditor = false
+    @State private var statsSheet = false
     @State private var pendingDeletion: ReminderList?
+    @State private var isSelecting = false
+    @State private var selectedIDs = Set<String>()
+    @State private var settingsSheet = false
 
     var body: some View {
         NavigationSplitView {
@@ -257,6 +387,15 @@ struct TaskManagerView: View {
         }
         .sheet(item: $listEditor) { request in
             ListEditor(store: store, request: request) { listEditor = nil }
+        }
+        .sheet(isPresented: $smartListEditor) {
+            SmartListEditor(store: store) { smartListEditor = false }
+        }
+        .sheet(isPresented: $statsSheet) {
+            StatsSheet(store: store, onClose: { statsSheet = false })
+        }
+        .sheet(isPresented: $settingsSheet) {
+            SettingsSheet(store: store, prefs: prefs, onClose: { settingsSheet = false })
         }
         .confirmationDialog(
             "删除「\(pendingDeletion?.title ?? "")」？",
@@ -286,8 +425,29 @@ struct TaskManagerView: View {
                     .tag(TaskScope.all)
                 Label("今天", systemImage: "calendar")
                     .tag(TaskScope.today)
+                Label("即将到期", systemImage: "calendar.badge.clock")
+                    .tag(TaskScope.upcoming)
                 Label("已完成", systemImage: "checkmark.circle")
                     .tag(TaskScope.completed)
+                Label("已归档", systemImage: "archivebox")
+                    .tag(TaskScope.archived)
+
+                Section("智能清单") {
+                    ForEach(store.smartLists) { list in
+                        Label(list.name, systemImage: "sparkles")
+                            .tag(TaskScope.smart(list.id))
+                            .contextMenu {
+                                Button("删除智能清单", role: .destructive) {
+                                    perform { try store.deleteSmartList(list) }
+                                    if selection == .smart(list.id) { selection = .all }
+                                }
+                            }
+                    }
+                    Button("新建智能清单", systemImage: "plus") { smartListEditor = .init() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(TaskViewColors.accent)
+                        .accessibilityIdentifier("add-smart-list")
+                }
 
                 Section("本机清单") {
                     ForEach(store.lists.filter { $0.source == .local }, id: \.id) { list in
@@ -362,10 +522,39 @@ struct TaskManagerView: View {
                     .font(.title3.weight(.semibold))
                     .lineLimit(1)
                 Spacer()
-                TextField("搜索事项", text: $search)
+                TextField("搜索：事项、#标签、日期…", text: $search)
                     .textFieldStyle(.roundedBorder)
                     .frame(minWidth: 100, idealWidth: 165, maxWidth: 210)
                     .accessibilityIdentifier("task-search")
+                Button("撤销", systemImage: "arrow.uturn.backward") { store.undo() }
+                    .labelStyle(.iconOnly)
+                    .help("撤销上一步")
+                    .disabled(!store.canUndo)
+                Button("重做", systemImage: "arrow.uturn.forward") { store.redo() }
+                    .labelStyle(.iconOnly)
+                    .help("重做")
+                    .disabled(!store.canRedo)
+                exportMenu
+                Button("统计", systemImage: "chart.bar.xaxis") { statsSheet = true }
+                    .labelStyle(.iconOnly)
+                    .help("查看统计")
+                Button("设置", systemImage: "gearshape") { settingsSheet = true }
+                    .labelStyle(.iconOnly)
+                    .help("设置")
+                    .accessibilityIdentifier("open-settings")
+                Button(isSelecting ? "退出选择" : "批量选择", systemImage: isSelecting ? "checkmark.rectangle" : "rectangle.stack") {
+                    isSelecting.toggle()
+                    selectedIDs.removeAll()
+                }
+                .labelStyle(.iconOnly)
+                .help("批量选择事项")
+                if selection == .all || selection == nil {
+                    Button("归档已完成", systemImage: "archivebox") {
+                        perform { try store.archiveCompletedLocalItems() }
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("把已完成的本机事项移入归档")
+                }
                 if currentList?.source == .local, let list = currentList {
                     Menu("清单操作", systemImage: "ellipsis.circle") {
                         Button("重命名清单") { listEditor = .init(list: list) }
@@ -387,6 +576,11 @@ struct TaskManagerView: View {
 
             Divider()
 
+            if isSelecting {
+                batchBar
+                Divider()
+            }
+
             TimelineView(.everyMinute) { context in
                 let items = visibleItems(at: context.date)
                 if items.isEmpty {
@@ -397,25 +591,7 @@ struct TaskManagerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List {
-                        if selection == .completed {
-                            ForEach(items, id: \.id) { item in managerRow(item, group: nil, at: context.date) }
-                        } else {
-                            ForEach(DueSection.groups(for: items.filter { !$0.isCompleted }, at: context.date)) { section in
-                                Section(section.group.title) {
-                                    ForEach(section.items, id: \.id) { item in
-                                        managerRow(item, group: section.group, at: context.date)
-                                    }
-                                }
-                            }
-                            let completed = items.filter(\.isCompleted)
-                            if !completed.isEmpty {
-                                Section("已完成") {
-                                    ForEach(completed, id: \.id) { item in
-                                        managerRow(item, group: nil, at: context.date)
-                                    }
-                                }
-                            }
-                        }
+                        scopeRows(items: items, at: context.date)
                     }
                     .listStyle(.plain)
                 }
@@ -434,46 +610,273 @@ struct TaskManagerView: View {
         return store.lists.first { $0.id == id }
     }
 
+    private var isArchivedScope: Bool {
+        if case .archived = selection { return true }
+        return false
+    }
+
     private var detailTitle: String {
         switch selection {
         case .all, nil: "全部待办"
         case .today: "今天"
+        case .upcoming: "即将到期"
         case .completed: "已完成"
+        case .archived: "已归档"
         case .list: currentList?.title ?? "清单"
+        case .smart(let id): store.smartLists.first { $0.id == id }?.name ?? "智能清单"
+        }
+    }
+
+    private var exportMenu: some View {
+        Menu("导出", systemImage: "square.and.arrow.up") {
+            Button("导出 CSV…") { export(.csv) }
+            Button("导出 Markdown…") { export(.markdown) }
+            Button("导出 JSON…") { export(.json) }
+            Divider()
+            Button("备份全部数据…") { export(.backup) }
+            Button("恢复备份…", action: restoreBackup)
+                .help("从备份文件恢复本机清单")
+        }
+        .labelStyle(.iconOnly)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("导出与备份")
+    }
+
+    private var batchBar: some View {
+        HStack(spacing: 10) {
+            Text("已选 \(selectedIDs.count) 项")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button("全选") { selectedIDs = Set(visibleItems(at: .now).map(\.id)) }
+            Button("清空") { selectedIDs.removeAll() }
+            Spacer()
+            if isArchivedScope {
+                Button("恢复") { batchRestore() }
+                Button("删除", role: .destructive) { batchDelete() }
+            } else {
+                Button("标为完成") { batchComplete() }
+                Button("归档") { batchArchive() }
+                Button("删除", role: .destructive) { batchDelete() }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 8)
+    }
+
+    private func sectionHeader(_ day: Date, at now: Date) -> some View {
+        Text(Calendar.current.isDate(day, inSameDayAs: now) ? "今天" : day.formatted(.dateTime.month(.defaultDigits).day().weekday()))
+    }
+
+    @ViewBuilder
+    private func scopeRows(items: [ReminderItem], at date: Date) -> some View {
+        switch selection ?? .all {
+        case .upcoming:
+            ForEach(upcomingSections(items, at: date)) { section in
+                Section(header: sectionHeader(section.day, at: date)) {
+                    ForEach(section.items, id: \.id) { item in
+                        managerRow(item, group: .upcoming, at: date)
+                    }
+                }
+            }
+        case .archived:
+            ForEach(items, id: \.id) { item in
+                managerRow(item, group: nil, at: date)
+            }
+        case .completed:
+            ForEach(items, id: \.id) { item in managerRow(item, group: nil, at: date) }
+        default:
+            ForEach(DueSection.groups(for: items.filter { !$0.isCompleted }, at: date)) { section in
+                Section(section.group.title) {
+                    ForEach(section.items, id: \.id) { item in
+                        managerRow(item, group: section.group, at: date)
+                    }
+                }
+            }
+            let completed = items.filter(\.isCompleted)
+            if !completed.isEmpty {
+                Section("已完成") {
+                    ForEach(completed, id: \.id) { item in
+                        managerRow(item, group: nil, at: date)
+                    }
+                }
+            }
+        }
+    }
+
+    private func upcomingSections(_ items: [ReminderItem], at date: Date) -> [UpcomingSection] {
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: items) { calendar.startOfDay(for: $0.dueDate ?? date) }
+        return grouped
+            .sorted { $0.key < $1.key }
+            .map { day, items in
+                UpcomingSection(day: day, items: items.sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) })
+            }
+    }
+
+    private func export(_ format: ExportFormat) {
+        let exporter = TaskExporter(store: store)
+        let suggestedName: String
+        switch format {
+        case .csv: suggestedName = "浮光提醒.csv"
+        case .markdown: suggestedName = "浮光提醒.md"
+        case .json: suggestedName = "浮光提醒.json"
+        case .backup: suggestedName = "浮光提醒备份.json"
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName
+        panel.canCreateDirectories = true
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let data: Data
+                switch format {
+                case .csv: data = exporter.csv()
+                case .markdown: data = Data(exporter.markdown().utf8)
+                case .json: data = exporter.json()
+                case .backup: data = exporter.backup()
+                }
+                try data.write(to: url, options: .atomic)
+            } catch {
+                store.errorMessage = "导出失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func restoreBackup() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.prompt = "恢复"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+            do {
+                try TaskExporter(store: store).restore(from: data)
+            } catch {
+                store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func batchComplete() {
+        let items = visibleItems(at: .now).filter { selectedIDs.contains($0.id) && !$0.isCompleted }
+        perform {
+            for item in items { try store.setCompleted(item, true) }
+            selectedIDs.removeAll()
+        }
+    }
+
+    private func batchArchive() {
+        let items = visibleItems(at: .now).filter { selectedIDs.contains($0.id) && $0.source == .local }
+        perform {
+            try store.archive(items)
+            selectedIDs.removeAll()
+        }
+    }
+
+    private func batchDelete() {
+        let items = visibleItems(at: .now).filter { selectedIDs.contains($0.id) }
+        perform {
+            if isArchivedScope {
+                try store.deleteArchived(Set(items.map(\.id)))
+            } else {
+                for item in items { try store.delete(item) }
+            }
+            selectedIDs.removeAll()
+        }
+    }
+
+    private func batchRestore() {
+        let items = visibleItems(at: .now).filter { selectedIDs.contains($0.id) }
+        perform {
+            try store.restoreArchived(Set(items.map(\.id)))
+            selectedIDs.removeAll()
         }
     }
 
     private func visibleItems(at date: Date) -> [ReminderItem] {
-        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let candidates = store.tasks.filter { item in
+        let query = NaturalQueryParser.parse(search, now: date)
+        let calendar = Calendar.current
+        let candidates = store.tasks.filter { item -> Bool in
             switch selection {
-            case .all, nil: !item.isCompleted
-            case .today: !item.isCompleted && item.dueDate.map { Calendar.current.isDate($0, inSameDayAs: date) } == true
-            case .completed: item.isCompleted
-            case .list(let id): item.listID == id
+            case .all, nil:
+                return !item.isCompleted
+            case .today:
+                return item.dueDate.map { calendar.isDate($0, inSameDayAs: date) } == true
+            case .upcoming:
+                guard let due = item.dueDate, !item.isCompleted else { return false }
+                guard let end = calendar.date(byAdding: .day, value: 14, to: calendar.startOfDay(for: date)) else { return false }
+                return due >= calendar.startOfDay(for: date) && due <= end
+            case .completed:
+                return item.isCompleted
+            case .archived, .smart:
+                return false
+            case .list(let id):
+                return item.listID == id
             }
         }
-        let filtered = query.isEmpty ? candidates : candidates.filter { item in
-            item.title.localizedStandardContains(query) || item.notes.localizedStandardContains(query)
-                || listSubtitle(for: item, in: store.lists).localizedStandardContains(query)
-                || item.subtasks.contains { $0.title.localizedStandardContains(query) }
+        let base: [ReminderItem]
+        switch selection {
+        case .archived:
+            base = store.archivedTasks
+        case .smart(let id):
+            base = store.smartLists.first { $0.id == id }.map { store.items(matching: $0.rule, at: date) } ?? []
+        default:
+            base = candidates
+        }
+        let filtered: [ReminderItem]
+        if query.isEmpty {
+            filtered = base
+        } else {
+            filtered = base.filter { item in
+                if let tag = query.tag,
+                   !item.tags.contains(where: { $0.localizedCaseInsensitiveCompare(tag) == .orderedSame }) { return false }
+                if let priority = query.priority, item.priority != priority { return false }
+                if let due = query.date, !calendar.isDate(item.dueDate ?? .distantPast, inSameDayAs: due) { return false }
+                guard !query.text.isEmpty else { return true }
+                let listTitle = store.lists.first { $0.id == item.listID }?.title ?? ""
+                return item.title.localizedStandardContains(query.text)
+                    || item.notes.localizedStandardContains(query.text)
+                    || listTitle.localizedStandardContains(query.text)
+                    || item.tags.contains { $0.localizedStandardContains(query.text) }
+            }
+        }
+        if selection == .upcoming {
+            return filtered.sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
         }
         return filtered.sorted { ($0.completionDate ?? .distantPast) > ($1.completionDate ?? .distantPast) }
     }
 
     private func managerRow(_ item: ReminderItem, group: DueGroup?, at date: Date) -> some View {
-        ReminderRow(
-            item: item,
-            store: store,
-            group: group,
-            referenceDate: date,
-            onOpen: { editor = .init(item: item) },
-            onFocus: { onFocusTask(item) },
-            onStartTimer: { onStartTaskTimer(item) },
-            onContinue: { onContinueTask(item, $0) }
-        )
+        HStack(spacing: 6) {
+            if isSelecting {
+                Toggle("选择 \(item.title)", isOn: Binding(
+                    get: { selectedIDs.contains(item.id) },
+                    set: { selected in
+                        if selected { selectedIDs.insert(item.id) } else { selectedIDs.remove(item.id) }
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+            }
+            ReminderRow(
+                item: item,
+                store: store,
+                group: group,
+                referenceDate: date,
+                onOpen: { editor = .init(item: item) },
+                onFocus: { onFocusTask(item) },
+                onStartTimer: { onStartTaskTimer(item) },
+                onContinue: { onContinueTask(item, $0) }
+            )
+        }
         .contextMenu {
             Button(item.isWritable ? "编辑事项" : "查看事项") { editor = .init(item: item) }
+            if isArchivedScope {
+                Divider()
+                Button("恢复") { perform { try store.restoreArchived([item.id]) } }
+                Button("删除", role: .destructive) { perform { try store.deleteArchived([item.id]) } }
+            }
             if !store.resources(for: item).isEmpty {
                 Button("继续", systemImage: "arrow.up.forward.app") { onContinueTask(item, false) }
                 if !item.isCompleted {
@@ -483,10 +886,25 @@ struct TaskManagerView: View {
             if !item.isCompleted {
                 Button("开始倒计时", systemImage: "timer") { onStartTaskTimer(item) }
                 Button("专注这件事…", systemImage: "hourglass") { onFocusTask(item) }
+                if item.dueDate != nil {
+                    Button("加入日历", systemImage: "calendar.badge.plus") {
+                        Task {
+                            guard await CalendarBridge.requestAccess() else {
+                                store.errorMessage = "需要日历权限。请到系统设置里允许访问日历。"
+                                return
+                            }
+                            do { try CalendarBridge.createEvent(for: item) }
+                            catch { store.errorMessage = error.localizedDescription }
+                        }
+                    }
+                }
             }
             if item.isWritable {
                 Button(item.isCompleted ? "恢复待办" : "标为完成") {
                     perform { try store.setCompleted(item, !item.isCompleted) }
+                }
+                if !isArchivedScope {
+                    Button("归档") { perform { try store.archive([item]) } }
                 }
             }
         }
@@ -499,7 +917,7 @@ struct TaskManagerView: View {
 }
 
 private enum TaskScope: Hashable {
-    case all, today, completed, list(String)
+    case all, today, upcoming, completed, archived, list(String), smart(UUID)
 }
 
 private enum DueGroup: String, CaseIterable, Identifiable {
@@ -521,6 +939,12 @@ private enum DueGroup: String, CaseIterable, Identifiable {
         if date < (item.hasTime ? now : calendar.startOfDay(for: now)) { return .overdue }
         return calendar.isDate(date, inSameDayAs: now) ? .today : .upcoming
     }
+}
+
+private struct UpcomingSection: Identifiable {
+    let day: Date
+    let items: [ReminderItem]
+    var id: Date { day }
 }
 
 private struct DueSection: Identifiable {
@@ -553,11 +977,8 @@ private func listSourceLabel(_ list: ReminderList) -> String {
 }
 
 private enum TaskViewColors {
-    static let accent = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.59, green: 0.90, blue: 0.91, alpha: 1)
-            : NSColor(srgbRed: 0.00, green: 0.36, blue: 0.41, alpha: 1)
-    })
+    @MainActor
+    static var accent: Color { AppPreferences.shared.accentTheme.color }
     static let overdue = Color(nsColor: NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             ? NSColor(srgbRed: 1, green: 0.68, blue: 0.67, alpha: 1)
@@ -598,6 +1019,7 @@ private struct ReminderRow: View {
     private var isPinned: Bool { store.pinnedTaskIDs.contains(item.id) }
     private var completedSubtasks: Int { item.subtasks.filter(\.isCompleted).count }
     private var hasResources: Bool { !store.resources(for: item).isEmpty }
+    private var isBlocked: Bool { !item.isCompleted && !item.dependsOn.isEmpty && store.blockedTaskIDs().contains(item.id) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -641,6 +1063,15 @@ private struct ReminderRow: View {
                             }
                             Text(listSubtitle(for: item, in: store.lists))
                                 .lineLimit(1)
+                            ForEach(item.tags.prefix(2), id: \.self) { tag in
+                                Text("#\(tag)")
+                                    .lineLimit(1)
+                            }
+                            if isBlocked {
+                                Image(systemName: "link.circle")
+                                    .accessibilityLabel("等待前置事项完成")
+                                    .help("等待前置事项完成")
+                            }
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -864,6 +1295,7 @@ private struct ReminderEditor: View {
     let onClose: () -> Void
 
     @State private var draft: ReminderDraft
+    @State private var tagsText = ""
     @State private var message: String?
     @State private var showDelete = false
     @State private var dateWasSetManually = false
@@ -873,6 +1305,7 @@ private struct ReminderEditor: View {
     @State private var templateToDelete: ReminderTemplate?
     @State private var showResourceLink = false
     @State private var resourceLink = ""
+    @State private var aiLoading = false
     @FocusState private var titleFocused: Bool
     @FocusState private var focusedSubtask: UUID?
 
@@ -884,6 +1317,7 @@ private struct ReminderEditor: View {
         let listID = request.listID ?? store.lists.first(where: { $0.source == .local && $0.isWritable })?.id
             ?? store.lists.first(where: \.isWritable)?.id ?? ""
         _draft = State(initialValue: request.item.map(ReminderDraft.init) ?? ReminderDraft(listID: listID))
+        _tagsText = State(initialValue: request.item?.tags.joined(separator: " ") ?? "")
     }
 
     var body: some View {
@@ -919,6 +1353,25 @@ private struct ReminderEditor: View {
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
                         .help("删除事项")
+                }
+                if let item = request.item, request.item?.isWritable != false {
+                    Button("加入日历", systemImage: "calendar.badge.plus") {
+                        Task {
+                            guard await CalendarBridge.requestAccess() else {
+                                message = "需要日历权限。请在系统设置里允许浮光提醒访问日历。"
+                                return
+                            }
+                            do {
+                                try CalendarBridge.createEvent(for: item)
+                            } catch {
+                                message = error.localizedDescription
+                            }
+                        }
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("把事项写入 Apple 日历（1 小时事件，到点提醒）")
+                    .accessibilityIdentifier("add-to-calendar")
                 }
                 Spacer()
                 Button(request.item?.isWritable == false ? "关闭" : "取消", action: onClose)
@@ -1031,6 +1484,92 @@ private struct ReminderEditor: View {
 
         if selectedList?.source == .local {
             subtaskSection
+            tagSection
+            dependencySection
+        }
+    }
+
+    private var tagSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("标签").font(.callout.weight(.semibold))
+                Spacer()
+                if !store.allTags.isEmpty {
+                    Menu {
+                        ForEach(store.allTags, id: \.self) { tag in
+                            Button(tag) { addTag(tag) }
+                        }
+                    } label: {
+                        Label("已有标签", systemImage: "tag")
+                            .font(.caption)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("从已有标签中选择")
+                }
+            }
+            TextField("用空格分隔，例如：工作 面试", text: $tagsText)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("task-tags")
+        }
+    }
+
+    private var dependencySection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("前置事项").font(.callout.weight(.semibold))
+                Spacer()
+                if !draft.dependsOn.isEmpty {
+                    Button("清空") { draft.dependsOn.removeAll() }
+                        .font(.caption)
+                        .help("清空前置事项")
+                }
+            }
+            if !draft.dependsOn.isEmpty {
+                HStack {
+                    ForEach(draft.dependsOn, id: \.self) { id in
+                        Text(store.tasks.first { $0.id == id }?.title ?? id)
+                            .font(.caption)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.primary.opacity(0.06), in: .rect(cornerRadius: 4))
+                    }
+                }
+            }
+            Menu("添加前置…", systemImage: "arrow.turn.down.right") {
+                let candidates = store.tasks.filter {
+                    $0.source == .local && !$0.isCompleted && $0.id != request.item?.id
+                }
+                if candidates.isEmpty {
+                    Text("没有其他待办事项").font(.caption)
+                }
+                ForEach(candidates) { candidate in
+                    let selected = draft.dependsOn.contains(candidate.id)
+                    Button {
+                        if selected {
+                            draft.dependsOn.removeAll { $0 == candidate.id }
+                        } else {
+                            draft.dependsOn.append(candidate.id)
+                        }
+                    } label: {
+                        if selected {
+                            Label(candidate.title, systemImage: "checkmark")
+                        } else {
+                            Text(candidate.title)
+                        }
+                    }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("完成前置事项后，这条事项才算就绪")
+        }
+    }
+
+    private func addTag(_ tag: String) {
+        let parts = tagsText.split(whereSeparator: \.isWhitespace).map(String.init)
+        if !parts.contains(where: { $0.localizedCaseInsensitiveCompare(tag) == .orderedSame }) {
+            tagsText = (parts + [tag]).joined(separator: " ")
         }
     }
 
@@ -1058,9 +1597,7 @@ private struct ReminderEditor: View {
 
             ForEach(draft.resources) { resource in
                 HStack(spacing: 6) {
-                    Image(systemName: resource.kind == .web ? "link" : "doc")
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
+                    ResourceThumbnail(resource: resource)
                     Text(resource.title)
                         .font(.callout)
                         .lineLimit(1)
@@ -1134,6 +1671,7 @@ private struct ReminderEditor: View {
                 Text("子任务")
                     .font(.callout.weight(.semibold))
                 Spacer()
+                aiSplitButton
                 templateMenu
             }
 
@@ -1218,6 +1756,43 @@ private struct ReminderEditor: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .accessibilityIdentifier("subtask-templates")
+    }
+
+    private var aiSplitButton: some View {
+        Button {
+            Task { await splitWithAI() }
+        } label: {
+            if aiLoading {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Label("AI 拆解", systemImage: "sparkles")
+                    .font(.caption)
+            }
+        }
+        .buttonStyle(.borderless)
+        .disabled(aiLoading
+                  || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                  || !ProLicense.shared.isActive)
+        .help(ProLicense.shared.isActive
+              ? "用 AI 把事项拆成子任务"
+              : "需要 Pro 许可，可在设置里输入演示码 \(ProLicense.demoCode)")
+        .accessibilityIdentifier("ai-split-subtasks")
+    }
+
+    private func splitWithAI() async {
+        aiLoading = true
+        defer { aiLoading = false }
+        do {
+            let titles = try await AIService.shared.splitSubtasks(title: draft.title, notes: draft.notes)
+            guard !titles.isEmpty else { throw AIService.AIError.badResponse }
+            let existing = Set(draft.subtasks.map { $0.title })
+            for title in titles where !existing.contains(title) {
+                draft.subtasks.append(ReminderSubtask(title: title))
+            }
+        } catch {
+            message = error.localizedDescription
+        }
     }
 
     private func subtaskMenu(_ id: UUID) -> some View {
@@ -1315,6 +1890,8 @@ private struct ReminderEditor: View {
         var savedDraft = draft
         if let suggestion = dateSuggestion { applyDateSuggestion(suggestion, to: &savedDraft) }
         if selectedList?.source != .local { savedDraft.subtasks = [] }
+        savedDraft.tags = tagsText.split(whereSeparator: \.isWhitespace).map(String.init)
+        if selectedList?.source != .local { savedDraft.dependsOn = [] }
         do {
             try store.save(savedDraft)
             if let parent { try store.setCompleted(parent, true) }
@@ -1391,6 +1968,346 @@ private struct ListEditor: View {
 }
 
 @MainActor
+private struct SmartListEditor: View {
+    let store: TaskStore
+    let onClose: () -> Void
+
+    private enum RuleKind: String, CaseIterable, Identifiable {
+        case tag, priority, overdue, dueInDays, noDueDate, list
+
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .tag: "包含标签"
+            case .priority: "指定优先级"
+            case .overdue: "已逾期"
+            case .dueInDays: "即将到期"
+            case .noDueDate: "未安排日期"
+            case .list: "来自清单"
+            }
+        }
+    }
+
+    @State private var name = ""
+    @State private var kind: RuleKind = .tag
+    @State private var tagName = ""
+    @State private var priorityLevel: ReminderPriority = .high
+    @State private var dueDays = 7
+    @State private var listID = ""
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("新建智能清单")
+                .font(.headline)
+            TextField("清单名称", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("smart-list-name")
+
+            Picker("规则", selection: $kind) {
+                ForEach(RuleKind.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+
+            switch kind {
+            case .tag:
+                TextField("标签，例如：工作", text: $tagName)
+                    .textFieldStyle(.roundedBorder)
+            case .priority:
+                Picker("优先级", selection: $priorityLevel) {
+                    Text("高").tag(ReminderPriority.high)
+                    Text("中").tag(ReminderPriority.medium)
+                    Text("低").tag(ReminderPriority.low)
+                }
+                .labelsHidden()
+            case .dueInDays:
+                Picker("天数", selection: $dueDays) {
+                    Text("1 天内").tag(1)
+                    Text("3 天内").tag(3)
+                    Text("7 天内").tag(7)
+                    Text("14 天内").tag(14)
+                    Text("30 天内").tag(30)
+                }
+                .labelsHidden()
+            case .list:
+                Picker("清单", selection: $listID) {
+                    ForEach(store.lists, id: \.id) { list in
+                        Text(list.title).tag(list.id)
+                    }
+                }
+                .labelsHidden()
+                .onChange(of: store.lists.map(\.id)) { _, ids in
+                    if !ids.contains(listID) { listID = ids.first ?? "" }
+                }
+                .onAppear {
+                    if listID.isEmpty { listID = store.lists.first?.id ?? "" }
+                }
+            case .overdue, .noDueDate:
+                EmptyView()
+            }
+
+            if !SmartRule.builtIn.isEmpty {
+                Menu("套用模板") {
+                    ForEach(SmartRule.builtIn) { template in
+                        Button(template.name) {
+                            name = template.name
+                            apply(template.rule)
+                        }
+                    }
+                }
+            }
+
+            if let message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(TaskViewColors.overdue)
+            }
+
+            HStack {
+                Spacer()
+                Button("取消", action: onClose)
+                    .keyboardShortcut(.cancelAction)
+                Button("保存", action: save)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSave)
+            }
+        }
+        .padding(18)
+        .frame(width: 400)
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty
+            && rule != nil
+    }
+
+    private var rule: SmartRule? {
+        switch kind {
+        case .tag:
+            let tag = tagName.trimmingCharacters(in: .whitespaces)
+            return tag.isEmpty ? nil : SmartRule.tag(tag)
+        case .priority:
+            return .priority(priorityLevel)
+        case .overdue:
+            return .overdue
+        case .dueInDays:
+            return .dueInDays(dueDays)
+        case .noDueDate:
+            return .noDueDate
+        case .list:
+            return listID.isEmpty ? nil : .list(listID)
+        }
+    }
+
+    private func apply(_ templateRule: SmartRule) {
+        switch templateRule {
+        case let .tag(value):
+            kind = .tag
+            tagName = value
+        case let .priority(value):
+            kind = .priority
+            priorityLevel = value
+        case .overdue:
+            kind = .overdue
+        case let .dueInDays(value):
+            kind = .dueInDays
+            dueDays = value
+        case .noDueDate:
+            kind = .noDueDate
+        case let .list(value):
+            kind = .list
+            listID = value
+        }
+    }
+
+    private func save() {
+        guard let rule else { return }
+        do {
+            try store.createSmartList(name: name, rule: rule)
+            onClose()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+}
+
+@MainActor
+private struct StatsSheet: View {
+    let store: TaskStore
+    let onClose: () -> Void
+    @ObservedObject var ai = AIService.shared
+    @ObservedObject var license = ProLicense.shared
+    @State private var reportText: String?
+    @State private var reportError: String?
+    @State private var reportLoading = false
+
+    private var stats: TaskStats {
+        TaskStats(tasks: store.tasks, lists: store.lists)
+    }
+
+    var body: some View {
+        let stats = self.stats
+        let maxCount = max(1, stats.dailyCompletions.map(\.count).max() ?? 1)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("统计")
+                .font(.title3.weight(.semibold))
+
+            HStack(spacing: 10) {
+                statCard("待办", value: stats.openTotal, icon: "tray")
+                statCard("已完成", value: stats.completedTotal, icon: "checkmark.circle")
+                statCard("逾期", value: stats.overdue, icon: "exclamationmark.circle")
+                statCard("连续完成", value: stats.streak, icon: "flame")
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("近 14 天完成")
+                    .font(.callout.weight(.semibold))
+                HStack(alignment: .bottom, spacing: 5) {
+                    ForEach(stats.dailyCompletions) { entry in
+                        VStack(spacing: 3) {
+                            Text("\(entry.count)")
+                                .font(.system(size: 9, weight: .medium).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(TaskViewColors.accent.opacity(entry.count == 0 ? 0.18 : 0.85))
+                                .frame(height: max(4, CGFloat(entry.count) / CGFloat(maxCount) * 64))
+                            Text(weekdayLetter(entry.day))
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+                .frame(height: 96, alignment: .bottom)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("分布").font(.callout.weight(.semibold))
+                if stats.byList.isEmpty {
+                    Text("暂无待办事项").font(.callout).foregroundStyle(.secondary)
+                } else {
+                    ForEach(stats.byList, id: \.title) { row in
+                        distributionRow(row.title, count: row.count, total: stats.openTotal)
+                    }
+                    ForEach(stats.byTag, id: \.tag) { row in
+                        distributionRow("#" + row.tag, count: row.count, total: stats.openTotal)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("AI 周报").font(.callout.weight(.semibold))
+                    Spacer()
+                    Button {
+                        Task { await generateReport(stats) }
+                    } label: {
+                        if reportLoading {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("生成", systemImage: "sparkles").font(.caption)
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(reportLoading || !license.isActive || !ai.hasKey)
+                    .help(!license.isActive ? "需要 Pro 许可" : (ai.hasKey ? "用 AI 生成本周简报" : "先在设置里配置 API Key"))
+                }
+                if let reportError {
+                    Text(reportError)
+                        .font(.caption)
+                        .foregroundStyle(TaskViewColors.overdue)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let reportText {
+                    Text(reportText)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+                } else if !license.isActive {
+                    Text("输入 Pro 许可码后可用（设置里可填演示码）。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("关闭", action: onClose)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(18)
+        .frame(width: 470)
+    }
+
+    private func statCard(_ title: String, value: Int, icon: String) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.body)
+                .foregroundStyle(TaskViewColors.accent)
+            Text("\(value)")
+                .font(.title3.weight(.semibold).monospacedDigit())
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .background(.primary.opacity(0.04), in: .rect(cornerRadius: 9))
+    }
+
+    private func distributionRow(_ label: String, count: Int, total: Int) -> some View {
+        GeometryReader { proxy in
+            let width = max(0, proxy.size.width - 120)
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .frame(width: 104, alignment: .leading)
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.primary.opacity(0.07))
+                    Capsule()
+                        .fill(TaskViewColors.accent.opacity(0.55))
+                        .frame(width: total == 0 ? 0 : width * CGFloat(count) / CGFloat(total))
+                }
+                .frame(height: 6)
+                Text("\(count)")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(height: 18)
+    }
+
+    private func weekdayLetter(_ day: Date) -> String {
+        let index = Calendar.current.component(.weekday, from: day)
+        let letters = "一二三四五六日"
+        return String(letters[letters.index(letters.startIndex, offsetBy: (index + 5) % 7)])
+    }
+
+    private func generateReport(_ stats: TaskStats) async {
+        reportLoading = true
+        reportError = nil
+        defer { reportLoading = false }
+        let focus = FocusTimer.storedFocusStats()
+        let weekDone = stats.dailyCompletions.map(\.count).reduce(0, +)
+        let taskSummary = "待办 \(stats.openTotal) 项，已完成 \(stats.completedTotal) 项，逾期 \(stats.overdue) 项，连续完成 \(stats.streak) 天；近 14 天完成 \(weekDone) 项"
+        let focusSummary = "近 7 天专注 \(Int(Double(focus.weekSeconds) / 3600.0)) 小时 \(focus.weekRounds) 轮，累计 \(Int(Double(focus.totalSeconds) / 3600.0)) 小时"
+        do {
+            reportText = try await AIService.shared.weeklyReport(taskSummary: taskSummary, focusSummary: focusSummary)
+        } catch {
+            reportError = error.localizedDescription
+        }
+    }
+}
+
+@MainActor
 private func errorMessage(_ message: String, dismiss: @escaping () -> Void) -> some View {
     HStack(alignment: .top, spacing: 7) {
         Image(systemName: "exclamationmark.circle")
@@ -1414,4 +2331,359 @@ private enum SystemSettingsPane: String {
 @MainActor
 private func openSystemSettings(_ pane: SystemSettingsPane) {
     if let url = URL(string: "x-apple.systempreferences:\(pane.rawValue)") { NSWorkspace.shared.open(url) }
+}
+
+@MainActor
+private struct SettingsSheet: View {
+    @ObservedObject var prefs: AppPreferences
+    @ObservedObject var ai = AIService.shared
+    @ObservedObject var license = ProLicense.shared
+    @StateObject private var sync: CloudKitSync
+    let onClose: () -> Void
+
+    @State private var keyDraft = ""
+    @State private var licenseDraft = ""
+    @State private var infoMessage: String?
+    @State private var copiedToken = false
+
+    private static let soundNames = ["Pop", "Ping", "Glass", "Tink", "Blow", "Purr", "Submarine", "Basso", "Frog", "Funk", "Morse", "Sosumi", "Bottle"]
+
+    init(store: TaskStore, prefs: AppPreferences, onClose: @escaping () -> Void) {
+        self.prefs = prefs
+        self.onClose = onClose
+        _sync = StateObject(wrappedValue: CloudKitSync(store: store))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("设置")
+                    .font(.title3.weight(.semibold))
+                Spacer()
+                Button("完成", action: onClose)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 13)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    appearanceSection
+                    Divider()
+                    feedbackSection
+                    Divider()
+                    inboxSection
+                    Divider()
+                    syncSection
+                    Divider()
+                    aiSection
+                    Divider()
+                    aboutSection
+                }
+                .padding(18)
+            }
+        }
+        .frame(width: 480, height: 620)
+        .task { await sync.refreshAuthorization() }
+    }
+
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            sectionTitle("外观")
+            HStack(spacing: 12) {
+                ForEach(AppTheme.allCases) { theme in
+                    Button {
+                        prefs.theme = theme.rawValue
+                    } label: {
+                        VStack(spacing: 5) {
+                            Circle()
+                                .fill(theme.color)
+                                .frame(width: 26, height: 26)
+                                .overlay(
+                                    Circle().strokeBorder(
+                                        .primary.opacity(prefs.theme == theme.rawValue ? 0.6 : 0.15),
+                                        lineWidth: 1.5
+                                    )
+                                )
+                            Text(theme.label)
+                                .font(.caption2)
+                                .foregroundStyle(prefs.theme == theme.rawValue ? .primary : .secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help(theme.label)
+                }
+            }
+            LabeledContent("面板透明度") {
+                Slider(value: $prefs.panelOpacity, in: 0.4...1)
+                    .frame(width: 165)
+                Text("\(Int(prefs.panelOpacity * 100))%")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 38, alignment: .trailing)
+            }
+        }
+    }
+
+    private var feedbackSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("反馈")
+            Toggle("完成事项时播放提示音", isOn: $prefs.soundEnabled)
+            LabeledContent("提示音") {
+                Picker("提示音", selection: $prefs.completionSound) {
+                    ForEach(Self.soundNames, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                }
+                .frame(width: 140)
+            }
+            .disabled(!prefs.soundEnabled)
+            Button("试听提示音") {
+                if let sound = NSSound(named: NSSound.Name(prefs.completionSound)) { sound.play() }
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+            .disabled(!prefs.soundEnabled)
+            Toggle("完成事项时播放小动画", isOn: $prefs.celebrationEnabled)
+            Toggle("彩虹细线", isOn: $prefs.rainbowHairline)
+        }
+    }
+
+    private var inboxSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("收件箱")
+            Toggle("剪贴板自动收集", isOn: $prefs.clipboardAutoCapture)
+            Text("在其他应用复制文本、链接或文件时，自动存入浮光收件箱。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Image(systemName: "network")
+                    .accessibilityHidden(true)
+                Text("本地接口 http://127.0.0.1:\(LocalHTTPInbox.port)")
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+            }
+            HStack(spacing: 6) {
+                Text("Token")
+                    .font(.caption)
+                Text(tokenValue)
+                    .font(.caption.monospaced())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                Button(copiedToken ? "已复制" : "复制") { copyToken() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
+            Text("curl -X POST http://127.0.0.1:\(LocalHTTPInbox.port)/inbox -H \"X-Fuguang-Token: <token>\" -d '{\"title\":\"看文档\"}'")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var syncSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("跨设备同步（CloudKit）")
+            TextField("容器 ID", text: $sync.containerID)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+            Text("默认 iCloud.local.fuguang.EdgeReminders。需要在 Apple 开发者后台创建同名 CloudKit 容器。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Button {
+                    Task {
+                        if let epoch = await sync.push() {
+                            infoMessage = "已上传（\(Date(timeIntervalSince1970: Double(epoch)).formatted(.dateTime.month().day().hour().minute()))）"
+                        } else {
+                            infoMessage = syncStatusText
+                        }
+                    }
+                } label: {
+                    Label("上传本机数据", systemImage: "arrow.up.circle")
+                }
+                Button {
+                    Task {
+                        let restored = await sync.pull()
+                        infoMessage = restored ? "已从云端恢复。" : syncStatusText
+                    }
+                } label: {
+                    Label("从云端恢复", systemImage: "arrow.down.circle")
+                }
+            }
+            .disabled(sync.status == .working)
+            Text(infoMessage ?? syncStatusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var aiSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("AI 助手")
+            if license.isActive {
+                Label("Pro 已激活", systemImage: "checkmark.seal.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            } else {
+                HStack(spacing: 6) {
+                    TextField("输入 Pro 许可码", text: $licenseDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                    Button("激活") {
+                        if license.activate(licenseDraft) {
+                            licenseDraft = ""
+                            infoMessage = "Pro 已激活。"
+                        } else {
+                            infoMessage = "许可码无效。演示码：\(ProLicense.demoCode)"
+                        }
+                    }
+                    .controlSize(.small)
+                }
+                Text("演示许可码 \(ProLicense.demoCode)，AI 拆子任务与 AI 周报需要 Pro。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            TextField("接口地址（OpenAI 兼容）", text: $ai.endpoint)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+            HStack(spacing: 8) {
+                TextField("模型", text: $ai.model)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .frame(width: 150)
+                Text(ai.hasKey ? "已保存 Key" : "未设置 Key")
+                    .font(.caption)
+                    .foregroundStyle(ai.hasKey ? Color.green : Color.secondary)
+            }
+            HStack(spacing: 6) {
+                SecureField("API Key（保存在钥匙串）", text: $keyDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                Button("保存") {
+                    ai.saveKey(keyDraft)
+                    keyDraft = ""
+                    infoMessage = ai.hasKey ? "Key 已保存。" : "Key 已清除。"
+                }
+                .controlSize(.small)
+            }
+            Text("支持 OpenAI、DeepSeek、Ollama 等兼容 /chat/completions 的服务。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var aboutSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("关于")
+            HStack {
+                Text("浮光提醒")
+                    .font(.caption)
+                Spacer()
+                Text(versionText)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            Toggle("启动时检查更新", isOn: $prefs.autoCheckUpdates)
+            HStack(spacing: 12) {
+                Button("项目主页") { openLink("https://github.com/giracle/EdgeReminders") }
+                Button("产品页") { openLink("https://giracle.github.io/EdgeReminders/showcase/") }
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+        }
+    }
+
+    private var tokenValue: String {
+        UserDefaults.standard.string(forKey: "httpInbox.token") ?? "—"
+    }
+
+    private var syncStatusText: String {
+        switch sync.status {
+        case .idle:
+            return "尚未连接 iCloud。"
+        case .working:
+            return "正在同步…"
+        case .ready:
+            let last = sync.lastPushDate?.formatted(.dateTime.month().day().hour().minute()) ?? "从未"
+            return "iCloud 可用。上次上传：\(last)"
+        case .denied:
+            return "iCloud 未授权。请在系统设置中登录 iCloud。"
+        case .failed(let message):
+            return message
+        }
+    }
+
+    private var versionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "\(version) (\(build))"
+    }
+
+    private func copyToken() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(tokenValue, forType: .string)
+        copiedToken = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            copiedToken = false
+        }
+    }
+
+    private func openLink(_ string: String) {
+        if let url = URL(string: string) { NSWorkspace.shared.open(url) }
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.callout.weight(.semibold))
+    }
+}
+
+@MainActor
+private struct ResourceThumbnail: View {
+    let resource: ReminderResource
+    @State private var image: NSImage?
+
+    private static let imageExtensions = ["png", "jpg", "jpeg", "gif", "heic", "webp", "bmp", "tiff"]
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: resource.kind == .web ? "link" : "doc")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 22, height: 22)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 4))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .accessibilityHidden(true)
+        .onAppear(perform: load)
+    }
+
+    private func load() {
+        guard resource.kind == .file, image == nil,
+              Self.imageExtensions.contains(resource.url.pathExtension.lowercased()) else { return }
+        let url = resource.url
+        Task { @MainActor in
+            guard let loaded = NSImage(contentsOf: url) else { return }
+            let scaled = NSImage(size: NSSize(width: 22, height: 22))
+            scaled.lockFocus()
+            loaded.draw(
+                in: NSRect(x: 0, y: 0, width: 22, height: 22),
+                from: NSRect(origin: .zero, size: loaded.size),
+                operation: .copy, fraction: 1
+            )
+            scaled.unlockFocus()
+            self.image = scaled
+        }
+    }
 }

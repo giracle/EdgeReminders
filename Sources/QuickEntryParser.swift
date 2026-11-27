@@ -44,7 +44,7 @@ enum QuickEntryParser {
         return Result(title: title, date: date, hasTime: false)
     }
 
-    private static func date(for text: String, now: Date, calendar: Calendar) -> Date? {
+    static func date(for text: String, now: Date, calendar: Calendar) -> Date? {
         let start = calendar.startOfDay(for: now)
         let offsets = ["今天": 0, "今日": 0, "明天": 1, "明日": 1, "后天": 2, "大后天": 3]
         if let days = offsets[text] { return calendar.date(byAdding: .day, value: days, to: start) }

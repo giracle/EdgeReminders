@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 private final class FloatingWindow: NSPanel {
@@ -55,6 +56,7 @@ final class FloatingPanelController: NSObject {
     private var waitsForPanelEntry = false
     private var initialDragPasteboardChangeCount: Int?
     private var lastReleasedDragPasteboardChangeCount: Int?
+    private var opacityObservation: AnyCancellable?
 
     init(store: TaskStore, onOpenManager: @escaping () -> Void, onOpenTimer: @escaping () -> Void,
          onQuit: @escaping () -> Void,
@@ -112,6 +114,17 @@ final class FloatingPanelController: NSObject {
         let timer = Timer(timeInterval: 1 / 30, target: self, selector: #selector(trackPointer), userInfo: nil, repeats: true)
         tracking = timer
         RunLoop.main.add(timer, forMode: .common)
+
+        opacityObservation = AppPreferences.shared.$panelOpacity
+            .receive(on: RunLoop.main)
+            .sink { [weak self] opacity in
+                guard let self, self.state != .closing else { return }
+                self.panel.alphaValue = opacity
+            }
+    }
+
+    private func applyOpacity() {
+        panel.alphaValue = AppPreferences.shared.panelOpacity
     }
 
     func show() {
@@ -307,9 +320,10 @@ final class FloatingPanelController: NSObject {
                 panel.setFrame(frame, display: true)
             }
             let direction = state
+            let targetOpacity = direction == .revealing ? AppPreferences.shared.panelOpacity : 0
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.13
-                panel.animator().alphaValue = direction == .revealing ? 1 : 0
+                panel.animator().alphaValue = targetOpacity
             } completionHandler: { [weak self] in
                 Task { @MainActor in
                     guard let self, self.state == direction else { return }
@@ -354,7 +368,7 @@ final class FloatingPanelController: NSObject {
             state = .hidden
         } else if state == .revealing {
             panel.setFrameOrigin(target)
-            panel.alphaValue = 1
+            applyOpacity()
             state = .docked
         }
     }
@@ -422,7 +436,7 @@ final class FloatingPanelController: NSObject {
         dock = nil
         candidate = nil
         blocked = nil
-        panel.alphaValue = 1
+        applyOpacity()
         panel.ignoresMouseEvents = false
         panel.setFrame(PanelDock.fit(panel.frame, inside: screen.visibleFrame), display: true)
     }

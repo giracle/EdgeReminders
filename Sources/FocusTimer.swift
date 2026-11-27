@@ -66,6 +66,20 @@ final class FocusTimer: ObservableObject {
         let title: String
     }
 
+    struct SessionLog: Codable {
+        let date: Date
+        let phase: Phase
+        let seconds: Int
+        let task: TaskReference?
+    }
+
+    struct FocusStats: Equatable {
+        var weekSeconds = 0
+        var weekRounds = 0
+        var totalSeconds = 0
+        var activeDays = 0
+    }
+
     private struct Session: Codable, Equatable {
         var id = UUID()
         let phase: Phase
@@ -84,6 +98,7 @@ final class FocusTimer: ObservableObject {
         var settings = Settings()
         var session: Session?
         var completedFocusRounds = 0
+        var logs: [SessionLog] = []
     }
 
     @Published private var saved: SavedState
@@ -188,6 +203,13 @@ final class FocusTimer: ObservableObject {
         if session.status == .running || session.status == .paused {
             notifications.cancel(session.id)
         }
+        if session.phase == .focus, session.status != .finished {
+            let remaining = session.deadline?.timeIntervalSince(now()) ?? session.pausedSeconds ?? 0
+            let elapsed = session.initialMinutes * 60 - Int(max(0, remaining))
+            if elapsed >= 60 {
+                appendLog(to: &saved, phase: .focus, seconds: elapsed, task: session.task)
+            }
+        }
         saved.session = nil
         remainingSeconds = 0
         persist()
@@ -227,6 +249,7 @@ final class FocusTimer: ObservableObject {
         finished.session = session
         if session.phase == .focus {
             finished.completedFocusRounds = min(4, finished.completedFocusRounds + 1)
+            appendLog(to: &finished, phase: .focus, seconds: session.initialMinutes * 60, task: session.task)
         } else if session.phase == .longBreak {
             finished.completedFocusRounds = 0
         }
@@ -234,6 +257,41 @@ final class FocusTimer: ObservableObject {
         persist()
         updateTicker()
         if emitCompletion { completionID = session.id }
+    }
+
+    /// 专注统计：近 7 天的专注时长与轮数、累计时长、活跃天数。
+    func focusStats(now: Date = .now, calendar: Calendar = .current) -> FocusStats {
+        Self.stats(from: saved.logs, now: now, calendar: calendar)
+    }
+
+    /// 不创建计时器实例、直接读持久化数据的统计（供管理窗口使用）。
+    static func storedFocusStats(defaults: UserDefaults = .standard, now: Date = .now,
+                                 calendar: Calendar = .current) -> FocusStats {
+        guard let data = defaults.data(forKey: storageKey),
+              let saved = try? JSONDecoder().decode(SavedState.self, from: data) else { return FocusStats() }
+        return stats(from: saved.logs, now: now, calendar: calendar)
+    }
+
+    private static func stats(from logs: [SessionLog], now: Date, calendar: Calendar) -> FocusStats {
+        var stats = FocusStats()
+        let weekStart = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: now)) ?? now
+        var days = Set<TimeInterval>()
+        for log in logs where log.phase == .focus {
+            stats.totalSeconds += log.seconds
+            if log.date >= weekStart {
+                stats.weekSeconds += log.seconds
+                stats.weekRounds += 1
+                days.insert(calendar.startOfDay(for: log.date).timeIntervalSince1970)
+            }
+        }
+        stats.activeDays = days.count
+        return stats
+    }
+
+    private func appendLog(to state: inout SavedState, phase: Phase, seconds: Int, task: TaskReference?) {
+        guard seconds >= 30 else { return }
+        state.logs.append(SessionLog(date: now(), phase: phase, seconds: seconds, task: task))
+        if state.logs.count > 400 { state.logs.removeFirst(state.logs.count - 400) }
     }
 
     private func persist() {

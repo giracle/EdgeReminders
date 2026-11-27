@@ -62,8 +62,35 @@ private extension FocusTimer {
 }
 
 @MainActor
+private struct FocusGlowView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 20, paused: reduceMotion)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            let breath = reduceMotion ? 0.8 : 0.5 + 0.3 * (0.5 + 0.5 * sin(t * 1.1))
+            RadialGradient(
+                colors: [
+                    Color.accentColor.opacity(0.5 * breath),
+                    Color.accentColor.opacity(0.15 * breath),
+                    .clear
+                ],
+                center: .center, startRadius: 6, endRadius: 170
+            )
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+@MainActor
 final class FocusTimerPanelController: NSObject, NSPopoverDelegate {
     private let timer: FocusTimer
+    private let glowWindow = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 340, height: 200),
+        styleMask: [.borderless], backing: .buffered, defer: true
+    )
+    private var glowTick: Timer?
     private let window = FocusClockWindow(
         contentRect: NSRect(x: 0, y: 0, width: 151, height: 38),
         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true
@@ -99,11 +126,50 @@ final class FocusTimerPanelController: NSObject, NSPopoverDelegate {
         window.contentView = host
         self.host = host
 
+        glowWindow.title = "专注氛围光"
+        glowWindow.isOpaque = false
+        glowWindow.backgroundColor = .clear
+        glowWindow.hasShadow = false
+        glowWindow.hidesOnDeactivate = false
+        glowWindow.isExcludedFromWindowsMenu = true
+        glowWindow.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue - 1)
+        glowWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        glowWindow.animationBehavior = .none
+        glowWindow.ignoresMouseEvents = true
+        glowWindow.contentView = NSHostingView(rootView: FocusGlowView())
+
         popover.behavior = .transient
         popover.animates = false
         popover.delegate = self
         NotificationCenter.default.addObserver(self, selector: #selector(displaysChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        let glowTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateGlow() }
+        }
+        RunLoop.main.add(glowTimer, forMode: .common)
+        glowTick = glowTimer
+    }
+
+    /// 专注计时运行时，在时钟窗口下方铺一层缓慢呼吸的氛围光。
+    private func updateGlow() {
+        let active = window.isVisible && timer.status == .running && timer.phase == .focus
+        guard active else {
+            if glowWindow.isVisible { glowWindow.orderOut(nil) }
+            return
+        }
+        let size = glowWindow.frame.size
+        let clockFrame = window.frame
+        let frame = NSRect(
+            x: clockFrame.midX - size.width / 2,
+            y: clockFrame.midY - size.height / 2 - 26,
+            width: size.width, height: size.height
+        )
+        if glowWindow.isVisible {
+            if glowWindow.frame != frame { glowWindow.setFrame(frame, display: false) }
+        } else {
+            glowWindow.setFrame(frame, display: false)
+            glowWindow.orderFront(nil)
+        }
     }
 
     func show(task: FocusTimer.TaskReference? = nil) {
@@ -408,6 +474,7 @@ private struct FocusClockControls: View {
         Divider()
         Toggle("到点播放提示音", isOn: $draft.soundEnabled)
         Toggle("在菜单栏显示时间", isOn: $draft.showInMenuBar)
+        focusStatsFooter
         Button(mode == .focus ? "开始专注" : "开始倒计时") {
             timer.configure(draft)
             timer.start(mode: mode, task: mode == .focus ? task : nil)
@@ -460,6 +527,28 @@ private struct FocusClockControls: View {
                 timer.configure(settings)
             }
         ))
+    }
+
+    @ViewBuilder private var focusStatsFooter: some View {
+        let stats = timer.focusStats()
+        if mode == .focus && (stats.weekRounds > 0 || stats.totalSeconds > 0) {
+            HStack(spacing: 4) {
+                Image(systemName: "flame.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
+                Text(focusStatsLabel(stats))
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+        }
+    }
+
+    private func focusStatsLabel(_ stats: FocusTimer.FocusStats) -> String {
+        func hours(_ seconds: Int) -> String { String(format: "%.1f", Double(seconds) / 3600) }
+        if stats.weekRounds > 0 {
+            return "本周专注 \(hours(stats.weekSeconds)) 小时 · \(stats.weekRounds) 轮"
+        }
+        return "累计专注 \(hours(stats.totalSeconds)) 小时"
     }
 
     private var duration: Binding<Int> {
