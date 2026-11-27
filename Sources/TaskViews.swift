@@ -383,7 +383,7 @@ struct TaskManagerView: View {
         .tint(TaskViewColors.accent)
         .sheet(item: $editor) { request in
             ReminderEditor(store: store, request: request, compact: false) { editor = nil }
-                .frame(width: 435, height: 460)
+                .frame(width: 460, height: 620)
         }
         .sheet(item: $listEditor) { request in
             ListEditor(store: store, request: request) { listEditor = nil }
@@ -1083,6 +1083,125 @@ private struct PanelIconStyle: ButtonStyle {
     }
 }
 
+// MARK: - 分组表单（分组卡片 + 行标签 + 系统控件）
+
+/// 分组卡片：浅灰圆角底 + 细描边，表单分区的公共容器。
+private struct GroupedCard<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.06)))
+    }
+}
+
+/// 卡片标题行：图标 + 标题 + 右侧可选附属控件。
+private struct CardHeader<Accessory: View>: View {
+    let title: String
+    let icon: String?
+    let accessory: Accessory
+
+    init(_ title: String, icon: String? = nil, @ViewBuilder accessory: () -> Accessory) {
+        self.title = title
+        self.icon = icon
+        self.accessory = accessory()
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let icon {
+                Image(systemName: icon)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+            Spacer(minLength: 8)
+            accessory
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+    }
+}
+
+extension CardHeader where Accessory == EmptyView {
+    init(_ title: String, icon: String? = nil) {
+        self.init(title, icon: icon) { EmptyView() }
+    }
+}
+
+/// 行标签 + 右侧系统控件（开关、菜单、滑杆、输入框）。
+private struct FormRow<Content: View>: View {
+    let label: String
+    let help: String?
+    let labelWidth: CGFloat
+    let content: Content
+
+    init(_ label: String, help: String? = nil, labelWidth: CGFloat = 56, @ViewBuilder content: () -> Content) {
+        self.label = label
+        self.help = help
+        self.labelWidth = labelWidth
+        self.content = content()
+    }
+
+    private var row: some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(width: labelWidth, alignment: .leading)
+            content
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if let help {
+            row.help(help)
+        } else {
+            row
+        }
+    }
+}
+
+/// 行间分隔线（左缩进，与标签对齐）。
+private struct RowSeparator: View {
+    var body: some View {
+        Divider()
+            .padding(.leading, 12)
+            .opacity(0.7)
+    }
+}
+
+/// 卡片底部脚注（说明文字 / 状态）。
+private struct CardFootnote: View {
+    let text: String
+    var mono: Bool = false
+
+    var body: some View {
+        Text(text)
+            .font(mono ? .caption2.monospaced() : .caption2)
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.top, 2)
+            .padding(.bottom, 10)
+    }
+}
+
 private struct ReminderRow: View {
     let item: ReminderItem
     @ObservedObject var store: TaskStore
@@ -1408,17 +1527,22 @@ private struct ReminderEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !compact {
-                Text(request.item == nil ? "新建提醒事项" : "提醒事项详情")
-                    .font(.title3.weight(.semibold))
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 14)
-                Divider()
+                header
+                Divider().opacity(0.55)
             }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 11) {
-                    fields
-                        .disabled(request.item?.isWritable == false)
+                VStack(alignment: .leading, spacing: 12) {
+                    Group {
+                        basicCard
+                        dateCard
+                        resourceCard
+                        if selectedList?.source == .local {
+                            subtaskCard
+                            tagsCard
+                        }
+                    }
+                    .disabled(request.item?.isWritable == false)
                     if request.item?.isWritable == false {
                         Label("此清单只读", systemImage: "lock")
                             .font(.caption)
@@ -1426,51 +1550,13 @@ private struct ReminderEditor: View {
                     }
                     if let message { errorMessage(message) { self.message = nil } }
                 }
-                .padding(.horizontal, 17)
+                .padding(.horizontal, 14)
                 .padding(.vertical, 12)
             }
             .defaultScrollAnchor(.top)
 
-            Divider()
-            HStack {
-                if request.item?.isWritable == true {
-                    Button("删除事项", systemImage: "trash", role: .destructive) { showDelete = true }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .help("删除事项")
-                }
-                if let item = request.item, request.item?.isWritable != false {
-                    Button("加入日历", systemImage: "calendar.badge.plus") {
-                        Task {
-                            guard await CalendarBridge.requestAccess() else {
-                                message = "需要日历权限。请在系统设置里允许浮光提醒访问日历。"
-                                return
-                            }
-                            do {
-                                try CalendarBridge.createEvent(for: item)
-                            } catch {
-                                message = error.localizedDescription
-                            }
-                        }
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("把事项写入 Apple 日历（1 小时事件，到点提醒）")
-                    .accessibilityIdentifier("add-to-calendar")
-                }
-                Spacer()
-                Button(request.item?.isWritable == false ? "关闭" : "取消", action: onClose)
-                    .keyboardShortcut(.cancelAction)
-                if request.item?.isWritable != false {
-                    Button("保存") { save() }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(!canSave)
-                        .accessibilityIdentifier("save-task")
-                }
-            }
-            .padding(.horizontal, 15)
-            .padding(.vertical, 10)
+            Divider().opacity(0.55)
+            footer
         }
         .task { if request.item == nil { titleFocused = true } }
         .confirmationDialog("删除此事项？", isPresented: $showDelete, titleVisibility: .visible) {
@@ -1485,169 +1571,261 @@ private struct ReminderEditor: View {
         }
     }
 
-    @ViewBuilder
-    private var fields: some View {
-        TextField("标题", text: $draft.title)
-            .textFieldStyle(.roundedBorder)
-            .focused($titleFocused)
-            .onSubmit { save() }
-            .accessibilityIdentifier("task-title")
-        if let suggestion = dateSuggestion {
-            Button {
-                applyDateSuggestion(suggestion, to: &draft)
-            } label: {
-                Label(suggestionLabel(suggestion), systemImage: "calendar.badge.plus")
-                    .font(.caption)
-            }
-            .buttonStyle(.link)
-            .accessibilityIdentifier("apply-suggested-date")
-        }
-        TextField("备注", text: $draft.notes, axis: .vertical)
-            .lineLimit(2...4)
-            .textFieldStyle(.roundedBorder)
-            .accessibilityIdentifier("task-notes")
+    // MARK: - 布局
 
-        resourceSection
-
-        Picker("清单", selection: $draft.listID) {
-            ForEach(availableLists, id: \.id) { list in
-                Text("\(list.title) · \(listSourceLabel(list))").tag(list.id)
-            }
-            if !availableLists.contains(where: { $0.id == draft.listID }) {
-                Text("未选择清单").tag(draft.listID)
-            }
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(request.item == nil ? "新建提醒事项" : "提醒事项详情")
+                .font(.system(size: 15, weight: .semibold))
+            Spacer()
         }
-        .accessibilityIdentifier("task-list-picker")
-        if hasSubtasksInAppleList {
-            Label("请选择本机清单以保留子任务", systemImage: "checklist")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-
-        Picker("优先级", selection: $draft.priority) {
-            ForEach([ReminderPriority.none, .low, .medium, .high], id: \.self) { option in
-                Text(option.label).tag(option)
-            }
-            if request.item?.priority == .custom { Text(ReminderPriority.custom.label).tag(ReminderPriority.custom) }
-        }
-
-        Toggle("设定日期", isOn: Binding(get: { draft.dueDate != nil }, set: { isOn in
-            dateWasSetManually = true
-            draft.dueDate = isOn ? Calendar.current.startOfDay(for: .now) : nil
-            if !isOn {
-                draft.hasTime = false
-                draft.alerts = false
-                draft.repeatRule = .never
-            }
-        }))
-        if draft.dueDate != nil {
-            DatePicker("日期", selection: dueDateBinding, displayedComponents: draft.hasTime ? [.date, .hourAndMinute] : [.date])
-                .datePickerStyle(.field)
-            Toggle("设定时间", isOn: Binding(get: { draft.hasTime }, set: { hasTime in
-                draft.hasTime = hasTime
-                if !hasTime { draft.alerts = false }
-                if hasTime, let date = draft.dueDate, date == Calendar.current.startOfDay(for: date) {
-                    let calendar = Calendar.current
-                    if calendar.isDateInToday(date) {
-                        let suggestedTime = Date.now.addingTimeInterval(5 * 60)
-                        let endOfDay = calendar.date(bySettingHour: 23, minute: 59, second: 0, of: date)
-                        draft.dueDate = min(suggestedTime, endOfDay ?? suggestedTime)
-                    } else {
-                        draft.dueDate = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: date)
-                    }
-                }
-            }))
-            Toggle("到时提醒", isOn: $draft.alerts)
-                .disabled(!draft.hasTime)
-            Picker("重复", selection: $draft.repeatRule) {
-                ForEach([ReminderRepeat.never, .daily, .weekly, .monthly, .yearly], id: \.self) { option in
-                    Text(option.label).tag(option)
-                }
-                if request.item?.repeatRule == .custom { Text(ReminderRepeat.custom.label).tag(ReminderRepeat.custom) }
-            }
-        }
-
-        if selectedList?.source == .local {
-            subtaskSection
-            tagSection
-            dependencySection
-        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 11)
     }
 
-    private var tagSection: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text("标签").font(.callout.weight(.semibold))
-                Spacer()
-                if !store.allTags.isEmpty {
-                    Menu {
-                        ForEach(store.allTags, id: \.self) { tag in
-                            Button(tag) { addTag(tag) }
+    private var footer: some View {
+        HStack {
+            if request.item?.isWritable == true {
+                Button("删除事项", systemImage: "trash", role: .destructive) { showDelete = true }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("删除事项")
+            }
+            if let item = request.item, request.item?.isWritable != false {
+                Button("加入日历", systemImage: "calendar.badge.plus") {
+                    Task {
+                        guard await CalendarBridge.requestAccess() else {
+                            message = "需要日历权限。请在系统设置里允许浮光提醒访问日历。"
+                            return
                         }
-                    } label: {
-                        Label("已有标签", systemImage: "tag")
-                            .font(.caption)
+                        do {
+                            try CalendarBridge.createEvent(for: item)
+                        } catch {
+                            message = error.localizedDescription
+                        }
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help("从已有标签中选择")
                 }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help("把事项写入 Apple 日历（1 小时事件，到点提醒）")
+                .accessibilityIdentifier("add-to-calendar")
             }
-            TextField("用空格分隔，例如：工作 面试", text: $tagsText)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("task-tags")
+            Spacer()
+            Button(request.item?.isWritable == false ? "关闭" : "取消", action: onClose)
+                .keyboardShortcut(.cancelAction)
+            if request.item?.isWritable != false {
+                Button("保存") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSave)
+                    .accessibilityIdentifier("save-task")
+            }
         }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 10)
     }
 
-    private var dependencySection: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text("前置事项").font(.callout.weight(.semibold))
-                Spacer()
-                if !draft.dependsOn.isEmpty {
-                    Button("清空") { draft.dependsOn.removeAll() }
-                        .font(.caption)
-                        .help("清空前置事项")
-                }
-            }
-            if !draft.dependsOn.isEmpty {
-                HStack {
-                    ForEach(draft.dependsOn, id: \.self) { id in
-                        Text(store.tasks.first { $0.id == id }?.title ?? id)
-                            .font(.caption)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.primary.opacity(0.06), in: .rect(cornerRadius: 4))
-                    }
-                }
-            }
-            Menu("添加前置…", systemImage: "arrow.turn.down.right") {
-                let candidates = store.tasks.filter {
-                    $0.source == .local && !$0.isCompleted && $0.id != request.item?.id
-                }
-                if candidates.isEmpty {
-                    Text("没有其他待办事项").font(.caption)
-                }
-                ForEach(candidates) { candidate in
-                    let selected = draft.dependsOn.contains(candidate.id)
+    // MARK: - 卡片
+
+    private var basicCard: some View {
+        GroupedCard {
+            VStack(alignment: .leading, spacing: 0) {
+                CardHeader("基本信息")
+                TextField("标题", text: $draft.title)
+                    .textFieldStyle(.plain)
+                    .focused($titleFocused)
+                    .onSubmit { save() }
+                    .accessibilityIdentifier("task-title")
+                    .padding(.horizontal, 12)
+                    .padding(.top, 2)
+                if let suggestion = dateSuggestion {
                     Button {
-                        if selected {
-                            draft.dependsOn.removeAll { $0 == candidate.id }
-                        } else {
-                            draft.dependsOn.append(candidate.id)
-                        }
+                        applyDateSuggestion(suggestion, to: &draft)
                     } label: {
-                        if selected {
-                            Label(candidate.title, systemImage: "checkmark")
-                        } else {
-                            Text(candidate.title)
+                        Label(suggestionLabel(suggestion), systemImage: "calendar.badge.plus")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.link)
+                    .accessibilityIdentifier("apply-suggested-date")
+                    .padding(.horizontal, 12)
+                    .padding(.top, 6)
+                }
+                TextField("备注", text: $draft.notes, axis: .vertical)
+                    .lineLimit(2...4)
+                    .textFieldStyle(.plain)
+                    .accessibilityIdentifier("task-notes")
+                    .padding(.horizontal, 12)
+                    .padding(.top, 10)
+                    .padding(.bottom, 10)
+                RowSeparator()
+                FormRow("清单") {
+                    Picker("清单", selection: $draft.listID) {
+                        ForEach(availableLists, id: \.id) { list in
+                            Text("\(list.title) · \(listSourceLabel(list))").tag(list.id)
                         }
+                        if !availableLists.contains(where: { $0.id == draft.listID }) {
+                            Text("未选择清单").tag(draft.listID)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .accessibilityIdentifier("task-list-picker")
+                }
+                RowSeparator()
+                FormRow("优先级") {
+                    Picker("优先级", selection: $draft.priority) {
+                        ForEach([ReminderPriority.none, .low, .medium, .high], id: \.self) { option in
+                            Text(option.label).tag(option)
+                        }
+                        if request.item?.priority == .custom { Text(ReminderPriority.custom.label).tag(ReminderPriority.custom) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                if hasSubtasksInAppleList {
+                    HStack(spacing: 5) {
+                        Image(systemName: "checklist")
+                            .accessibilityHidden(true)
+                        Text("请选择本机清单以保留子任务")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 2)
+                    .padding(.bottom, 10)
+                }
+            }
+        }
+    }
+
+    private var dateCard: some View {
+        GroupedCard {
+            VStack(alignment: .leading, spacing: 0) {
+                CardHeader("日期与时间")
+                FormRow("设定日期") {
+                    Toggle("设定日期", isOn: dateEnabledBinding)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                if draft.dueDate != nil {
+                    RowSeparator()
+                    FormRow("日期") {
+                        DatePicker("日期", selection: dueDateBinding, displayedComponents: draft.hasTime ? [.date, .hourAndMinute] : [.date])
+                            .labelsHidden()
+                            .datePickerStyle(.field)
+                    }
+                    RowSeparator()
+                    FormRow("设定时间") {
+                        Toggle("设定时间", isOn: hasTimeBinding)
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                    RowSeparator()
+                    FormRow("到时提醒") {
+                        Toggle("到时提醒", isOn: $draft.alerts)
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .disabled(!draft.hasTime)
+                    }
+                    RowSeparator()
+                    FormRow("重复") {
+                        Picker("重复", selection: $draft.repeatRule) {
+                            ForEach([ReminderRepeat.never, .daily, .weekly, .monthly, .yearly], id: \.self) { option in
+                                Text(option.label).tag(option)
+                            }
+                            if request.item?.repeatRule == .custom { Text(ReminderRepeat.custom.label).tag(ReminderRepeat.custom) }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                 }
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .help("完成前置事项后，这条事项才算就绪")
+        }
+    }
+
+    private var tagsCard: some View {
+        GroupedCard {
+            VStack(alignment: .leading, spacing: 0) {
+                CardHeader("标签与依赖")
+                FormRow("标签") {
+                    HStack(spacing: 8) {
+                        TextField("用空格分隔，例如：工作 面试", text: $tagsText)
+                            .textFieldStyle(.plain)
+                            .accessibilityIdentifier("task-tags")
+                        if !store.allTags.isEmpty {
+                            Menu {
+                                ForEach(store.allTags, id: \.self) { tag in
+                                    Button(tag) { addTag(tag) }
+                                }
+                            } label: {
+                                Image(systemName: "tag")
+                            }
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
+                            .fixedSize()
+                            .help("从已有标签中选择")
+                        }
+                    }
+                }
+                RowSeparator()
+                FormRow("前置事项", help: "完成前置事项后，这条事项才算就绪") {
+                    HStack(spacing: 6) {
+                        if draft.dependsOn.isEmpty {
+                            Text("无")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        } else {
+                            ForEach(draft.dependsOn, id: \.self) { id in
+                                Text(store.tasks.first { $0.id == id }?.title ?? id)
+                                    .font(.caption)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(.primary.opacity(0.06), in: .rect(cornerRadius: 4))
+                            }
+                            Button("清空前置事项", systemImage: "xmark.circle") { draft.dependsOn.removeAll() }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.secondary)
+                                .help("清空前置事项")
+                        }
+                        Spacer(minLength: 4)
+                        Menu {
+                            let candidates = store.tasks.filter {
+                                $0.source == .local && !$0.isCompleted && $0.id != request.item?.id
+                            }
+                            if candidates.isEmpty {
+                                Text("没有其他待办事项").font(.caption)
+                            }
+                            ForEach(candidates) { candidate in
+                                let selected = draft.dependsOn.contains(candidate.id)
+                                Button {
+                                    if selected {
+                                        draft.dependsOn.removeAll { $0 == candidate.id }
+                                    } else {
+                                        draft.dependsOn.append(candidate.id)
+                                    }
+                                } label: {
+                                    if selected {
+                                        Label(candidate.title, systemImage: "checkmark")
+                                    } else {
+                                        Text(candidate.title)
+                                    }
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "arrow.turn.down.right")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help("添加前置事项")
+                    }
+                }
+            }
         }
     }
 
@@ -1658,47 +1836,62 @@ private struct ReminderEditor: View {
         }
     }
 
-    private var resourceSection: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text("关联资料").font(.callout.weight(.semibold))
-                Spacer()
-                Menu {
-                    Button("添加网页链接", systemImage: "link") {
-                        resourceLink = ""
-                        showResourceLink = true
-                    }
-                    Button("选择文件或文件夹…", systemImage: "folder", action: chooseResourceFiles)
-                } label: {
-                    Label("添加资料", systemImage: "plus")
-                        .labelStyle(.iconOnly)
+    private var resourceCard: some View {
+        GroupedCard {
+            VStack(alignment: .leading, spacing: 0) {
+                CardHeader("关联资料", icon: "paperclip") {
+                    addResourceMenu
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("添加资料")
-                .accessibilityIdentifier("add-task-resource")
-            }
-
-            ForEach(draft.resources) { resource in
-                HStack(spacing: 6) {
-                    ResourceThumbnail(resource: resource)
-                    Text(resource.title)
-                        .font(.callout)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(resource.kind == .web ? resource.url.absoluteString : resource.url.path)
-                    Spacer(minLength: 4)
-                    Button("移除 \(resource.title)", systemImage: "xmark.circle") {
-                        draft.resources.removeAll { $0.id == resource.id }
+                if draft.resources.isEmpty {
+                    Text("没有关联资料，可添加网页链接或本地文件。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 2)
+                        .padding(.bottom, 10)
+                } else {
+                    ForEach(draft.resources) { resource in
+                        HStack(spacing: 6) {
+                            ResourceThumbnail(resource: resource)
+                            Text(resource.title)
+                                .font(.callout)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(resource.kind == .web ? resource.url.absoluteString : resource.url.path)
+                            Spacer(minLength: 4)
+                            Button("移除 \(resource.title)", systemImage: "xmark.circle") {
+                                draft.resources.removeAll { $0.id == resource.id }
+                            }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
+                            .help("移除关联")
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
                     }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .help("移除关联")
                 }
             }
         }
+    }
+
+    private var addResourceMenu: some View {
+        Menu {
+            Button("添加网页链接", systemImage: "link") {
+                resourceLink = ""
+                showResourceLink = true
+            }
+            Button("选择文件或文件夹…", systemImage: "folder", action: chooseResourceFiles)
+        } label: {
+            Label("添加资料", systemImage: "plus")
+                .labelStyle(.iconOnly)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("添加资料")
+        .accessibilityIdentifier("add-task-resource")
     }
 
     private func addResourceLink() {
@@ -1749,54 +1942,66 @@ private struct ReminderEditor: View {
         draft.alerts = suggestion.hasTime
     }
 
-    private var subtaskSection: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Divider().padding(.vertical, 2)
-            HStack {
-                Text("子任务")
-                    .font(.callout.weight(.semibold))
-                Spacer()
-                aiSplitButton
-                templateMenu
-            }
-
-            ForEach($draft.subtasks) { $subtask in
-                let id = subtask.id
-                HStack(spacing: 7) {
-                    Toggle("完成子任务", isOn: $subtask.isCompleted)
-                        .toggleStyle(.checkbox)
-                        .labelsHidden()
-                        .accessibilityLabel(subtask.title.isEmpty ? "完成子任务" : "完成 \(subtask.title)")
-                    TextField("子任务标题", text: $subtask.title)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($focusedSubtask, equals: id)
-                        .accessibilityIdentifier("subtask-title")
-                    Image(systemName: "line.3.horizontal")
-                        .font(.caption)
+    private var subtaskCard: some View {
+        GroupedCard {
+            VStack(alignment: .leading, spacing: 0) {
+                CardHeader("子任务", icon: "checklist") {
+                    HStack(spacing: 2) {
+                        aiSplitButton
+                        templateMenu
+                    }
+                }
+                if draft.subtasks.isEmpty {
+                    Text("把大事项拆成小步骤，逐步完成。")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 2)
-                        .contentShape(Rectangle())
-                        .draggable(id.uuidString)
-                        .help("拖动排序")
-                        .accessibilityHidden(true)
-                    subtaskMenu(id)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 2)
+                        .padding(.bottom, 6)
                 }
-                .dropDestination(for: String.self) { values, _ in
-                    guard let value = values.first, let sourceID = UUID(uuidString: value) else { return false }
-                    return moveSubtask(sourceID, to: id)
+                ForEach($draft.subtasks) { $subtask in
+                    let id = subtask.id
+                    HStack(spacing: 7) {
+                        Toggle("完成子任务", isOn: $subtask.isCompleted)
+                            .toggleStyle(.checkbox)
+                            .labelsHidden()
+                            .accessibilityLabel(subtask.title.isEmpty ? "完成子任务" : "完成 \(subtask.title)")
+                        TextField("子任务标题", text: $subtask.title)
+                            .textFieldStyle(.plain)
+                            .focused($focusedSubtask, equals: id)
+                            .accessibilityIdentifier("subtask-title")
+                        Image(systemName: "line.3.horizontal")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 2)
+                            .contentShape(Rectangle())
+                            .draggable(id.uuidString)
+                            .help("拖动排序")
+                            .accessibilityHidden(true)
+                        subtaskMenu(id)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 3)
+                    .dropDestination(for: String.self) { values, _ in
+                        guard let value = values.first, let sourceID = UUID(uuidString: value) else { return false }
+                        return moveSubtask(sourceID, to: id)
+                    }
                 }
-            }
-
-            HStack {
-                Button("添加子任务", systemImage: "plus", action: addSubtask)
-                    .buttonStyle(.borderless)
-                    .accessibilityIdentifier("add-subtask")
-                if let parent = parentReadyToComplete {
-                    Spacer()
-                    Button("保存并完成主事项", systemImage: "checkmark.circle") { save(completing: parent) }
+                HStack {
+                    Button("添加子任务", systemImage: "plus", action: addSubtask)
                         .buttonStyle(.borderless)
-                        .disabled(!canSave)
+                        .accessibilityIdentifier("add-subtask")
+                    if let parent = parentReadyToComplete {
+                        Spacer()
+                        Button("保存并完成主事项", systemImage: "checkmark.circle") { save(completing: parent) }
+                            .buttonStyle(.borderless)
+                            .disabled(!canSave)
+                    }
                 }
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
             }
         }
         .alert("存为子任务模板", isPresented: $showTemplateName) {
@@ -1935,6 +2140,35 @@ private struct ReminderEditor: View {
 
     private var dueDateBinding: Binding<Date> {
         Binding(get: { draft.dueDate ?? .now }, set: { draft.dueDate = $0 })
+    }
+
+    private var dateEnabledBinding: Binding<Bool> {
+        Binding(get: { draft.dueDate != nil }, set: { isOn in
+            dateWasSetManually = true
+            draft.dueDate = isOn ? Calendar.current.startOfDay(for: .now) : nil
+            if !isOn {
+                draft.hasTime = false
+                draft.alerts = false
+                draft.repeatRule = .never
+            }
+        })
+    }
+
+    private var hasTimeBinding: Binding<Bool> {
+        Binding(get: { draft.hasTime }, set: { hasTime in
+            draft.hasTime = hasTime
+            if !hasTime { draft.alerts = false }
+            if hasTime, let date = draft.dueDate, date == Calendar.current.startOfDay(for: date) {
+                let calendar = Calendar.current
+                if calendar.isDateInToday(date) {
+                    let suggestedTime = Date.now.addingTimeInterval(5 * 60)
+                    let endOfDay = calendar.date(bySettingHour: 23, minute: 59, second: 0, of: date)
+                    draft.dueDate = min(suggestedTime, endOfDay ?? suggestedTime)
+                } else {
+                    draft.dueDate = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: date)
+                }
+            }
+        })
     }
 
     private var availableLists: [ReminderList] {
@@ -2630,8 +2864,11 @@ private struct SettingsSheet: View {
 
     @State private var keyDraft = ""
     @State private var licenseDraft = ""
-    @State private var infoMessage: String?
+    @State private var syncMessage: String?
+    @State private var aiMessage: String?
     @State private var copiedToken = false
+
+    private static let labelWidth: CGFloat = 108
 
     private static let soundNames = ["Pop", "Ping", "Glass", "Tink", "Blow", "Purr", "Submarine", "Basso", "Frog", "Funk", "Morse", "Sosumi", "Bottle"]
 
@@ -2643,246 +2880,332 @@ private struct SettingsSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("设置")
-                    .font(.title3.weight(.semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("设置")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("主题、提醒、收件箱、同步与 AI")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("完成", action: onClose)
                     .keyboardShortcut(.defaultAction)
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 13)
-            Divider()
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 11)
+
+            Divider().opacity(0.55)
+
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 14) {
                     appearanceSection
-                    Divider()
                     feedbackSection
-                    Divider()
                     inboxSection
-                    Divider()
                     syncSection
-                    Divider()
                     aiSection
-                    Divider()
                     aboutSection
                 }
-                .padding(18)
+                .padding(16)
             }
         }
         .frame(width: 480, height: 620)
         .task { await sync.refreshAuthorization() }
     }
 
+    // MARK: - 分区
+
     private var appearanceSection: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            sectionTitle("外观")
-            HStack(spacing: 12) {
-                ForEach(AppTheme.allCases) { theme in
-                    Button {
-                        prefs.theme = theme.rawValue
-                    } label: {
-                        VStack(spacing: 5) {
-                            Circle()
-                                .fill(theme.color)
-                                .frame(width: 26, height: 26)
-                                .overlay(
-                                    Circle().strokeBorder(
-                                        .primary.opacity(prefs.theme == theme.rawValue ? 0.6 : 0.15),
-                                        lineWidth: 1.5
-                                    )
-                                )
-                            Text(theme.label)
-                                .font(.caption2)
-                                .foregroundStyle(prefs.theme == theme.rawValue ? .primary : .secondary)
+        GroupedCard {
+            VStack(alignment: .leading, spacing: 0) {
+                CardHeader("外观", icon: "paintpalette")
+                settingsRow("主题") {
+                    HStack(spacing: 14) {
+                        ForEach(AppTheme.allCases) { theme in
+                            themeSwatch(theme)
                         }
                     }
-                    .buttonStyle(.plain)
-                    .help(theme.label)
                 }
-            }
-            LabeledContent("面板透明度") {
-                Slider(value: $prefs.panelOpacity, in: 0.4...1)
-                    .frame(width: 165)
-                Text("\(Int(prefs.panelOpacity * 100))%")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .frame(width: 38, alignment: .trailing)
+                RowSeparator()
+                settingsRow("面板透明度", help: "浮窗与管理窗口的背景不透明度") {
+                    HStack(spacing: 8) {
+                        Slider(value: $prefs.panelOpacity, in: 0.4...1)
+                        Text("\(Int(prefs.panelOpacity * 100))%")
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 38, alignment: .trailing)
+                    }
+                }
             }
         }
     }
 
+    private func themeSwatch(_ theme: AppTheme) -> some View {
+        Button {
+            prefs.theme = theme.rawValue
+        } label: {
+            VStack(spacing: 5) {
+                Circle()
+                    .fill(theme.color)
+                    .frame(width: 24, height: 24)
+                    .overlay(
+                        Circle().strokeBorder(
+                            .primary.opacity(prefs.theme == theme.rawValue ? 0.6 : 0.15),
+                            lineWidth: 1.5
+                        )
+                    )
+                Text(theme.label)
+                    .font(.caption2)
+                    .foregroundStyle(prefs.theme == theme.rawValue ? .primary : .secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .help(theme.label)
+    }
+
     private var feedbackSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("反馈")
-            Toggle("完成事项时播放提示音", isOn: $prefs.soundEnabled)
-            LabeledContent("提示音") {
-                Picker("提示音", selection: $prefs.completionSound) {
-                    ForEach(Self.soundNames, id: \.self) { name in
-                        Text(name).tag(name)
-                    }
+        GroupedCard {
+            VStack(alignment: .leading, spacing: 0) {
+                CardHeader("反馈", icon: "bell.badge")
+                settingsRow("完成提示音", help: "完成事项时播放提示音") {
+                    Toggle("完成事项时播放提示音", isOn: $prefs.soundEnabled)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
-                .frame(width: 140)
+                RowSeparator()
+                settingsRow("提示音", help: "点击喇叭图标试听") {
+                    HStack(spacing: 8) {
+                        Picker("提示音", selection: $prefs.completionSound) {
+                            ForEach(Self.soundNames, id: \.self) { name in
+                                Text(name).tag(name)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 140)
+                        Spacer(minLength: 0)
+                        Button {
+                            if let sound = NSSound(named: NSSound.Name(prefs.completionSound)) { sound.play() }
+                        } label: {
+                            Image(systemName: "speaker.wave.2.fill")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("试听提示音")
+                    }
+                    .disabled(!prefs.soundEnabled)
+                }
+                RowSeparator()
+                settingsRow("完成动画", help: "完成事项时播放粒子小动画") {
+                    Toggle("完成事项时播放小动画", isOn: $prefs.celebrationEnabled)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                RowSeparator()
+                settingsRow("彩虹细线", help: "在浮窗顶部显示彩虹细线") {
+                    Toggle("彩虹细线", isOn: $prefs.rainbowHairline)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
-            .disabled(!prefs.soundEnabled)
-            Button("试听提示音") {
-                if let sound = NSSound(named: NSSound.Name(prefs.completionSound)) { sound.play() }
-            }
-            .buttonStyle(.link)
-            .font(.caption)
-            .disabled(!prefs.soundEnabled)
-            Toggle("完成事项时播放小动画", isOn: $prefs.celebrationEnabled)
-            Toggle("彩虹细线", isOn: $prefs.rainbowHairline)
         }
     }
 
     private var inboxSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("收件箱")
-            Toggle("剪贴板自动收集", isOn: $prefs.clipboardAutoCapture)
-            Text("在其他应用复制文本、链接或文件时，自动存入浮光收件箱。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack(spacing: 6) {
-                Image(systemName: "network")
-                    .accessibilityHidden(true)
-                Text("本地接口 http://127.0.0.1:\(LocalHTTPInbox.port)")
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
+        GroupedCard {
+            VStack(alignment: .leading, spacing: 0) {
+                CardHeader("收件箱", icon: "tray")
+                settingsRow("剪贴板自动收集", help: "在其他应用复制文本、链接或文件时，自动存入浮光收件箱") {
+                    Toggle("剪贴板自动收集", isOn: $prefs.clipboardAutoCapture)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                RowSeparator()
+                settingsRow("本地接口") {
+                    HStack(spacing: 5) {
+                        Image(systemName: "network")
+                            .font(.caption)
+                            .accessibilityHidden(true)
+                        Text("http://127.0.0.1:\(LocalHTTPInbox.port)")
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                        Spacer(minLength: 0)
+                    }
+                }
+                RowSeparator()
+                settingsRow("Token") {
+                    HStack(spacing: 6) {
+                        Text(tokenValue)
+                            .font(.caption.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                        Spacer(minLength: 4)
+                        Button(copiedToken ? "已复制" : "复制", action: copyToken)
+                            .font(.caption)
+                            .buttonStyle(.borderless)
+                    }
+                }
+                CardFootnote(
+                    text: "curl -X POST http://127.0.0.1:\(LocalHTTPInbox.port)/inbox -H \"X-Fuguang-Token: <token>\" -d '{\"title\":\"看文档\"}'",
+                    mono: true
+                )
             }
-            HStack(spacing: 6) {
-                Text("Token")
-                    .font(.caption)
-                Text(tokenValue)
-                    .font(.caption.monospaced())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                Button(copiedToken ? "已复制" : "复制") { copyToken() }
-                    .buttonStyle(.link)
-                    .font(.caption)
-            }
-            Text("curl -X POST http://127.0.0.1:\(LocalHTTPInbox.port)/inbox -H \"X-Fuguang-Token: <token>\" -d '{\"title\":\"看文档\"}'")
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private var syncSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("跨设备同步（CloudKit）")
-            TextField("容器 ID", text: $sync.containerID)
-                .textFieldStyle(.roundedBorder)
-                .font(.caption)
-            Text("默认 iCloud.local.fuguang.EdgeReminders。需要在 Apple 开发者后台创建同名 CloudKit 容器。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                Button {
-                    Task {
-                        if let epoch = await sync.push() {
-                            infoMessage = "已上传（\(Date(timeIntervalSince1970: Double(epoch)).formatted(.dateTime.month().day().hour().minute()))）"
-                        } else {
-                            infoMessage = syncStatusText
+        GroupedCard {
+            VStack(alignment: .leading, spacing: 0) {
+                CardHeader("跨设备同步（CloudKit）", icon: "icloud")
+                settingsRow("容器 ID", help: "需要在 Apple 开发者后台创建同名 CloudKit 容器") {
+                    TextField("iCloud.local.fuguang.EdgeReminders", text: $sync.containerID)
+                        .textFieldStyle(.plain)
+                        .font(.caption)
+                }
+                RowSeparator()
+                settingsRow("同步") {
+                    HStack(spacing: 8) {
+                        Button {
+                            Task {
+                                if let epoch = await sync.push() {
+                                    syncMessage = "已上传（\(Date(timeIntervalSince1970: Double(epoch)).formatted(.dateTime.month().day().hour().minute()))）"
+                                } else {
+                                    syncMessage = syncStatusText
+                                }
+                            }
+                        } label: {
+                            Label("上传本机数据", systemImage: "arrow.up.circle")
                         }
+                        .controlSize(.small)
+                        Button {
+                            Task {
+                                let restored = await sync.pull()
+                                syncMessage = restored ? "已从云端恢复。" : syncStatusText
+                            }
+                        } label: {
+                            Label("从云端恢复", systemImage: "arrow.down.circle")
+                        }
+                        .controlSize(.small)
+                        Spacer(minLength: 0)
                     }
-                } label: {
-                    Label("上传本机数据", systemImage: "arrow.up.circle")
+                    .disabled(sync.status == .working)
                 }
-                Button {
-                    Task {
-                        let restored = await sync.pull()
-                        infoMessage = restored ? "已从云端恢复。" : syncStatusText
-                    }
-                } label: {
-                    Label("从云端恢复", systemImage: "arrow.down.circle")
+                RowSeparator()
+                settingsRow("状态") {
+                    Text(syncMessage ?? syncStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
+                CardFootnote(text: "默认容器 iCloud.local.fuguang.EdgeReminders，需在开发者后台创建。")
             }
-            .disabled(sync.status == .working)
-            Text(infoMessage ?? syncStatusText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private var aiSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("AI 助手")
-            if license.isActive {
-                Label("Pro 已激活", systemImage: "checkmark.seal.fill")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-            } else {
-                HStack(spacing: 6) {
-                    TextField("输入 Pro 许可码", text: $licenseDraft)
-                        .textFieldStyle(.roundedBorder)
+        GroupedCard {
+            VStack(alignment: .leading, spacing: 0) {
+                CardHeader("AI 助手", icon: "sparkles")
+                if license.isActive {
+                    settingsRow("Pro") {
+                        HStack(spacing: 5) {
+                            Image(systemName: "checkmark.seal.fill")
+                            Text("已激活")
+                        }
                         .font(.caption)
-                    Button("激活") {
-                        if license.activate(licenseDraft) {
-                            licenseDraft = ""
-                            infoMessage = "Pro 已激活。"
-                        } else {
-                            infoMessage = "许可码无效。演示码：\(ProLicense.demoCode)"
+                        .foregroundStyle(.green)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                } else {
+                    settingsRow("许可码", help: "AI 拆子任务与 AI 周报需要 Pro；演示码 \(ProLicense.demoCode)") {
+                        HStack(spacing: 8) {
+                            TextField("输入 Pro 许可码", text: $licenseDraft)
+                                .textFieldStyle(.plain)
+                                .font(.caption)
+                            Button("激活", action: activateLicense)
+                                .controlSize(.small)
                         }
                     }
-                    .controlSize(.small)
                 }
-                Text("演示许可码 \(ProLicense.demoCode)，AI 拆子任务与 AI 周报需要 Pro。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            TextField("接口地址（OpenAI 兼容）", text: $ai.endpoint)
-                .textFieldStyle(.roundedBorder)
-                .font(.caption)
-            HStack(spacing: 8) {
-                TextField("模型", text: $ai.model)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                    .frame(width: 150)
-                Text(ai.hasKey ? "已保存 Key" : "未设置 Key")
-                    .font(.caption)
-                    .foregroundStyle(ai.hasKey ? Color.green : Color.secondary)
-            }
-            HStack(spacing: 6) {
-                SecureField("API Key（保存在钥匙串）", text: $keyDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                Button("保存") {
-                    ai.saveKey(keyDraft)
-                    keyDraft = ""
-                    infoMessage = ai.hasKey ? "Key 已保存。" : "Key 已清除。"
+                RowSeparator()
+                settingsRow("接口地址", help: "OpenAI 兼容的 /chat/completions 服务地址") {
+                    TextField("OpenAI 兼容接口", text: $ai.endpoint)
+                        .textFieldStyle(.plain)
+                        .font(.caption)
                 }
-                .controlSize(.small)
+                RowSeparator()
+                settingsRow("模型") {
+                    TextField("模型名称", text: $ai.model)
+                        .textFieldStyle(.plain)
+                        .font(.caption)
+                }
+                RowSeparator()
+                settingsRow("API Key", help: "保存在钥匙串中") {
+                    HStack(spacing: 8) {
+                        SecureField("输入 API Key", text: $keyDraft)
+                            .textFieldStyle(.plain)
+                            .font(.caption)
+                        Button("保存", action: saveKey)
+                            .controlSize(.small)
+                    }
+                }
+                CardFootnote(text: aiMessage ?? (ai.hasKey ? "Key 已保存。" : "尚未设置 Key。"))
             }
-            Text("支持 OpenAI、DeepSeek、Ollama 等兼容 /chat/completions 的服务。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
     }
 
     private var aboutSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("关于")
-            HStack {
-                Text("浮光提醒")
-                    .font(.caption)
-                Spacer()
-                Text(versionText)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+        GroupedCard {
+            VStack(alignment: .leading, spacing: 0) {
+                CardHeader("关于", icon: "info.circle")
+                settingsRow("版本") {
+                    Text("浮光提醒 \(versionText)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                RowSeparator()
+                settingsRow("启动时检查更新") {
+                    Toggle("启动时检查更新", isOn: $prefs.autoCheckUpdates)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                RowSeparator()
+                settingsRow("链接") {
+                    HStack(spacing: 14) {
+                        Button("项目主页") { openLink("https://github.com/giracle/EdgeReminders") }
+                            .buttonStyle(.link)
+                            .font(.caption)
+                        Button("产品页") { openLink("https://giracle.github.io/EdgeReminders/showcase/") }
+                            .buttonStyle(.link)
+                            .font(.caption)
+                        Spacer(minLength: 0)
+                    }
+                }
             }
-            Toggle("启动时检查更新", isOn: $prefs.autoCheckUpdates)
-            HStack(spacing: 12) {
-                Button("项目主页") { openLink("https://github.com/giracle/EdgeReminders") }
-                Button("产品页") { openLink("https://giracle.github.io/EdgeReminders/showcase/") }
-            }
-            .buttonStyle(.link)
-            .font(.caption)
         }
+    }
+
+    private func settingsRow<Content: View>(_ label: String, help: String? = nil, @ViewBuilder content: () -> Content) -> some View {
+        FormRow(label, help: help, labelWidth: Self.labelWidth, content: content)
+    }
+
+    private func activateLicense() {
+        if license.activate(licenseDraft) {
+            licenseDraft = ""
+            aiMessage = "Pro 已激活。"
+        } else {
+            aiMessage = "许可码无效。演示码：\(ProLicense.demoCode)"
+        }
+    }
+
+    private func saveKey() {
+        ai.saveKey(keyDraft)
+        keyDraft = ""
+        aiMessage = ai.hasKey ? "Key 已保存。" : "Key 已清除。"
     }
 
     private var tokenValue: String {
@@ -2923,11 +3246,6 @@ private struct SettingsSheet: View {
 
     private func openLink(_ string: String) {
         if let url = URL(string: string) { NSWorkspace.shared.open(url) }
-    }
-
-    private func sectionTitle(_ title: String) -> some View {
-        Text(title)
-            .font(.callout.weight(.semibold))
     }
 }
 
