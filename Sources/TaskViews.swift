@@ -1936,14 +1936,49 @@ private struct ListEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(request.list == nil ? "新建本机清单" : "重命名清单")
-                .font(.headline)
-            TextField("清单名称", text: $title)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("list-name")
-            if let message { errorMessage(message) { self.message = nil } }
-            HStack {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(request.list == nil ? "新建本机清单" : "重命名清单")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("本机清单保存在这台 Mac 上，不依赖 Apple 提醒事项")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 11)
+
+            Divider().opacity(0.55)
+
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Text("名称")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 46, alignment: .leading)
+                    TextField("清单名称", text: $title)
+                        .textFieldStyle(.plain)
+                        .accessibilityIdentifier("list-name")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                if let message {
+                    Divider().padding(.leading, 12)
+                    errorMessage(message) { self.message = nil }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                }
+            }
+            .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.06)))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+
+            Spacer(minLength: 0)
+
+            Divider().opacity(0.55)
+            HStack(spacing: 10) {
                 Spacer()
                 Button("取消", action: onClose)
                     .keyboardShortcut(.cancelAction)
@@ -1953,9 +1988,10 @@ private struct ListEditor: View {
                     .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("save-list")
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
-        .padding(18)
-        .frame(width: 340)
+        .frame(width: 380)
     }
 
     private func save() {
@@ -1976,6 +2012,7 @@ private struct SmartListEditor: View {
         case tag, priority, overdue, dueInDays, noDueDate, list
 
         var id: String { rawValue }
+
         var title: String {
             switch self {
             case .tag: "包含标签"
@@ -1984,6 +2021,34 @@ private struct SmartListEditor: View {
             case .dueInDays: "即将到期"
             case .noDueDate: "未安排日期"
             case .list: "来自清单"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .tag: "number"
+            case .priority: "exclamationmark.circle"
+            case .overdue: "clock.badge.exclamationmark"
+            case .dueInDays: "calendar.badge.clock"
+            case .noDueDate: "calendar"
+            case .list: "list.bullet"
+            }
+        }
+
+        var detailTitle: String {
+            switch self {
+            case .tag: "标签"
+            case .priority: "优先级"
+            case .dueInDays: "范围"
+            case .list: "清单"
+            case .overdue, .noDueDate: ""
+            }
+        }
+
+        var hasDetail: Bool {
+            switch self {
+            case .tag, .priority, .dueInDays, .list: true
+            case .overdue, .noDueDate: false
             }
         }
     }
@@ -1997,92 +2062,197 @@ private struct SmartListEditor: View {
     @State private var message: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("新建智能清单")
-                .font(.headline)
-            TextField("清单名称", text: $name)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("smart-list-name")
+        VStack(spacing: 0) {
+            header
 
-            Picker("规则", selection: $kind) {
-                ForEach(RuleKind.allCases) { option in
-                    Text(option.title).tag(option)
+            Divider().opacity(0.55)
+
+            VStack(alignment: .leading, spacing: 10) {
+                ruleCard
+                footnote
+                if let message {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(TaskViewColors.overdue)
+                        .padding(.horizontal, 2)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+
+            Divider().opacity(0.55)
+            footer
+        }
+        .frame(width: 430)
+        .task {
+            if listID.isEmpty { listID = store.lists.first?.id ?? "" }
+        }
+        .onChange(of: store.lists.map(\.id)) { _, ids in
+            if !ids.contains(listID) { listID = ids.first ?? "" }
+        }
+    }
+
+    // MARK: - 布局
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("新建智能清单")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("按条件自动聚合待办，事项仍留在原清单")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if !SmartRule.builtIn.isEmpty {
+                templateMenu
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 11)
+    }
+
+    private var templateMenu: some View {
+        Menu {
+            ForEach(SmartRule.builtIn) { template in
+                Button(template.name) {
+                    name = template.name
+                    apply(template.rule)
+                }
+            }
+        } label: {
+            Label("模板", systemImage: "square.on.square")
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("用内置模板快速创建")
+    }
+
+    private var ruleCard: some View {
+        VStack(spacing: 0) {
+            row("名称") {
+                TextField("例如：本周面试", text: $name)
+                    .textFieldStyle(.plain)
+                    .accessibilityIdentifier("smart-list-name")
+            }
+            separator
+            row("条件") {
+                Picker("条件", selection: $kind) {
+                    ForEach(RuleKind.allCases) { option in
+                        Label(option.title, systemImage: option.symbol).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            if kind.hasDetail {
+                separator
+                row(kind.detailTitle) { detailControl }
+            }
+            separator
+            row("匹配") {
+                HStack(spacing: 5) {
+                    Spacer()
+                    Image(systemName: "sparkles")
+                        .font(.caption)
+                        .foregroundStyle(TaskViewColors.accent)
+                    Text(rule == nil ? "未设置条件" : "\(matchCount) 项")
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.06)))
+    }
+
+    private var footnote: some View {
+        Text("智能清单是筛选视图：改事项本身请到它所在的清单。")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 2)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            Spacer()
+            Button("取消", action: onClose)
+                .keyboardShortcut(.cancelAction)
+            Button("保存", action: save)
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSave)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private func row<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(width: 46, alignment: .leading)
+            content()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var separator: some View {
+        Divider().padding(.leading, 12).opacity(0.7)
+    }
+
+    @ViewBuilder private var detailControl: some View {
+        switch kind {
+        case .tag:
+            TextField("例如：工作", text: $tagName)
+                .textFieldStyle(.plain)
+        case .priority:
+            Picker("优先级", selection: $priorityLevel) {
+                Text("高").tag(ReminderPriority.high)
+                Text("中").tag(ReminderPriority.medium)
+                Text("低").tag(ReminderPriority.low)
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        case .dueInDays:
+            Picker("范围", selection: $dueDays) {
+                Text("1 天内").tag(1)
+                Text("3 天内").tag(3)
+                Text("7 天内").tag(7)
+                Text("14 天内").tag(14)
+                Text("30 天内").tag(30)
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        case .list:
+            Picker("清单", selection: $listID) {
+                ForEach(store.lists, id: \.id) { list in
+                    Text(list.title).tag(list.id)
                 }
             }
             .labelsHidden()
-            .pickerStyle(.segmented)
-
-            switch kind {
-            case .tag:
-                TextField("标签，例如：工作", text: $tagName)
-                    .textFieldStyle(.roundedBorder)
-            case .priority:
-                Picker("优先级", selection: $priorityLevel) {
-                    Text("高").tag(ReminderPriority.high)
-                    Text("中").tag(ReminderPriority.medium)
-                    Text("低").tag(ReminderPriority.low)
-                }
-                .labelsHidden()
-            case .dueInDays:
-                Picker("天数", selection: $dueDays) {
-                    Text("1 天内").tag(1)
-                    Text("3 天内").tag(3)
-                    Text("7 天内").tag(7)
-                    Text("14 天内").tag(14)
-                    Text("30 天内").tag(30)
-                }
-                .labelsHidden()
-            case .list:
-                Picker("清单", selection: $listID) {
-                    ForEach(store.lists, id: \.id) { list in
-                        Text(list.title).tag(list.id)
-                    }
-                }
-                .labelsHidden()
-                .onChange(of: store.lists.map(\.id)) { _, ids in
-                    if !ids.contains(listID) { listID = ids.first ?? "" }
-                }
-                .onAppear {
-                    if listID.isEmpty { listID = store.lists.first?.id ?? "" }
-                }
-            case .overdue, .noDueDate:
-                EmptyView()
-            }
-
-            if !SmartRule.builtIn.isEmpty {
-                Menu("套用模板") {
-                    ForEach(SmartRule.builtIn) { template in
-                        Button(template.name) {
-                            name = template.name
-                            apply(template.rule)
-                        }
-                    }
-                }
-            }
-
-            if let message {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(TaskViewColors.overdue)
-            }
-
-            HStack {
-                Spacer()
-                Button("取消", action: onClose)
-                    .keyboardShortcut(.cancelAction)
-                Button("保存", action: save)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canSave)
-            }
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        case .overdue, .noDueDate:
+            EmptyView()
         }
-        .padding(18)
-        .frame(width: 400)
     }
 
+    // MARK: - 数据
+
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty
-            && rule != nil
+        !name.trimmingCharacters(in: .whitespaces).isEmpty && rule != nil
+    }
+
+    private var matchCount: Int {
+        rule.map { store.items(matching: $0).count } ?? 0
     }
 
     private var rule: SmartRule? {
