@@ -588,7 +588,7 @@ struct TaskManagerView: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            TextField("搜索事项、#标签、日期…", text: $search)
+            TextField("搜索事项、#标签、日期、拼音…", text: $search)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .accessibilityIdentifier("task-search")
@@ -608,7 +608,7 @@ struct TaskManagerView: View {
         .frame(width: 186, height: 24)
         .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.primary.opacity(0.08)))
-        .help("搜索事项、标签或日期")
+        .help("支持关键词、拼音、#标签、日期与优先级，可空格分隔多个关键词")
     }
 
     private var moreMenu: some View {
@@ -705,6 +705,17 @@ struct TaskManagerView: View {
 
     @ViewBuilder
     private func scopeRows(items: [ReminderItem], at date: Date) -> some View {
+        if !searchTokens.isEmpty {
+            ForEach(items, id: \.id) { item in
+                managerRow(item, group: nil, at: date)
+            }
+        } else {
+            scopeRowsBySelection(items: items, at: date)
+        }
+    }
+
+    @ViewBuilder
+    private func scopeRowsBySelection(items: [ReminderItem], at date: Date) -> some View {
         switch selection ?? .all {
         case .upcoming:
             ForEach(upcomingSections(items, at: date)) { section in
@@ -829,58 +840,78 @@ struct TaskManagerView: View {
         }
     }
 
+    private var searchTokens: [String] {
+        FuzzySearch.tokens(from: NaturalQueryParser.parse(search).text)
+    }
+
+    private var isSearchingQuery: Bool {
+        let parsed = NaturalQueryParser.parse(search)
+        return !searchTokens.isEmpty || parsed.tag != nil || parsed.priority != nil || parsed.date != nil
+    }
+
     private func visibleItems(at date: Date) -> [ReminderItem] {
         let query = NaturalQueryParser.parse(search, now: date)
+        let tokens = FuzzySearch.tokens(from: query.text)
         let calendar = Calendar.current
-        let candidates = store.tasks.filter { item -> Bool in
-            switch selection {
-            case .all, nil:
-                return !item.isCompleted
-            case .today:
-                return item.dueDate.map { calendar.isDate($0, inSameDayAs: date) } == true
-            case .upcoming:
-                guard let due = item.dueDate, !item.isCompleted else { return false }
-                guard let end = calendar.date(byAdding: .day, value: 14, to: calendar.startOfDay(for: date)) else { return false }
-                return due >= calendar.startOfDay(for: date) && due <= end
-            case .completed:
-                return item.isCompleted
-            case .archived, .smart:
-                return false
-            case .list(let id):
-                return item.listID == id
-            }
-        }
+
         let base: [ReminderItem]
-        switch selection {
-        case .archived:
+        if isSearchingQuery {
+            // 有关键词/条件时全局搜索：不再受侧栏范围限制，包含已完成与归档。
+            base = store.tasks + store.archivedTasks
+        } else if selection == .archived {
             base = store.archivedTasks
-        case .smart(let id):
+        } else if case .smart(let id) = selection {
             base = store.smartLists.first { $0.id == id }.map { store.items(matching: $0.rule, at: date) } ?? []
-        default:
-            base = candidates
-        }
-        let filtered: [ReminderItem]
-        if query.isEmpty {
-            filtered = base
         } else {
-            filtered = base.filter { item in
-                if let tag = query.tag,
-                   !item.tags.contains(where: { $0.localizedCaseInsensitiveCompare(tag) == .orderedSame }) { return false }
-                if let priority = query.priority, item.priority != priority { return false }
-                if let due = query.date, !calendar.isDate(item.dueDate ?? .distantPast, inSameDayAs: due) { return false }
-                guard !query.text.isEmpty else { return true }
-                let listTitle = store.lists.first { $0.id == item.listID }?.title ?? ""
-                return item.title.localizedStandardContains(query.text)
-                    || item.notes.localizedStandardContains(query.text)
-                    || listTitle.localizedStandardContains(query.text)
-                    || item.tags.contains { $0.localizedStandardContains(query.text) }
+            base = store.tasks.filter { item -> Bool in
+                switch selection {
+                case .all, nil:
+                    return !item.isCompleted
+                case .today:
+                    return item.dueDate.map { calendar.isDate($0, inSameDayAs: date) } == true
+                case .upcoming:
+                    guard let due = item.dueDate, !item.isCompleted else { return false }
+                    guard let end = calendar.date(byAdding: .day, value: 14, to: calendar.startOfDay(for: date)) else { return false }
+                    return due >= calendar.startOfDay(for: date) && due <= end
+                case .completed:
+                    return item.isCompleted
+                case .list(let id):
+                    return item.listID == id
+                case .archived, .smart:
+                    return false
+                }
             }
+        }
+
+        let filtered = base.filter { item in
+            if let tag = query.tag,
+               !item.tags.contains(where: { $0.localizedCaseInsensitiveCompare(tag) == .orderedSame }) { return false }
+            if let priority = query.priority, item.priority != priority { return false }
+            if let due = query.date, !calendar.isDate(item.dueDate ?? .distantPast, inSameDayAs: due) { return false }
+            guard !tokens.isEmpty else { return true }
+            let listTitle = store.lists.first { $0.id == item.listID }?.title ?? ""
+            let text = FuzzySearch.text(for: item, listTitle: listTitle, resources: store.resources(for: item))
+            return FuzzySearch.matches(text, tokens: tokens)
+        }
+
+        if !tokens.isEmpty {
+            return filtered.sorted { lhs, rhs in
+                let lTitle = tokens.contains { lhs.title.localizedCaseInsensitiveContains($0) }
+                let rTitle = tokens.contains { rhs.title.localizedCaseInsensitiveContains($0) }
+                if lTitle != rTitle { return lTitle }
+                if lhs.isCompleted != rhs.isCompleted { return !lhs.isCompleted }
+                return (lhs.dueDate ?? .distantFuture) < (rhs.dueDate ?? .distantFuture)
+            }
+        }
+        if isSearchingQuery {
+            return filtered.sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
         }
         if selection == .upcoming {
             return filtered.sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
         }
         return filtered.sorted { ($0.completionDate ?? .distantPast) > ($1.completionDate ?? .distantPast) }
     }
+
 
     private func managerRow(_ item: ReminderItem, group: DueGroup?, at date: Date) -> some View {
         HStack(spacing: 8) {

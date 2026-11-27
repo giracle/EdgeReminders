@@ -798,8 +798,10 @@ final class TaskStore: ObservableObject {
     func search(_ query: String, at now: Date = .now) -> [ReminderItem] {
         let parsed = NaturalQueryParser.parse(query, now: now)
         guard !parsed.isEmpty else { return [] }
+        let tokens = FuzzySearch.tokens(from: parsed.text)
         let calendar = Calendar.current
-        var result = tasks.filter { item in
+        let pool = tasks + archivedTasks
+        var result = pool.filter { item in
             if let tag = parsed.tag, !item.tags.contains(where: { $0.localizedCaseInsensitiveCompare(tag) == .orderedSame }) {
                 return false
             }
@@ -807,16 +809,17 @@ final class TaskStore: ObservableObject {
             if let due = parsed.date {
                 guard let itemDate = item.dueDate, calendar.isDate(itemDate, inSameDayAs: due) else { return false }
             }
-            guard !parsed.text.isEmpty else { return true }
+            guard !tokens.isEmpty else { return true }
             let listTitle = lists.first { $0.id == item.listID }?.title ?? ""
-            return item.title.localizedCaseInsensitiveContains(parsed.text)
-                || item.notes.localizedCaseInsensitiveContains(parsed.text)
-                || listTitle.localizedCaseInsensitiveContains(parsed.text)
-                || item.tags.contains { $0.localizedCaseInsensitiveContains(parsed.text) }
+            let text = FuzzySearch.text(for: item, listTitle: listTitle, resources: resources(for: item))
+            return FuzzySearch.matches(text, tokens: tokens)
         }
-        result.sort {
-            if $0.isCompleted != $1.isCompleted { return !$0.isCompleted }
-            return ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture)
+        result.sort { lhs, rhs in
+            let lTitle = tokens.contains { lhs.title.localizedCaseInsensitiveContains($0) }
+            let rTitle = tokens.contains { rhs.title.localizedCaseInsensitiveContains($0) }
+            if lTitle != rTitle { return lTitle }
+            if lhs.isCompleted != rhs.isCompleted { return !lhs.isCompleted }
+            return (lhs.dueDate ?? .distantFuture) < (rhs.dueDate ?? .distantFuture)
         }
         return result
     }

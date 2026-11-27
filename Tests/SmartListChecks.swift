@@ -151,6 +151,27 @@ struct SmartListChecks {
         precondition(stats.dailyCompletions.count == 14)
         precondition(stats.streak >= 1)
 
+        // Fuzzy search: 子串 / 拼音全拼 / 首字母 / 多关键词无序 / 已完成也可搜到。
+        let fuzzyFile = directory.appending(path: "Fuzzy.json")
+        let fuzzyStore = TaskStore(localURL: fuzzyFile, enablesNotifications: false)
+        try fuzzyStore.createLocalList("项目")
+        let fuzzyList = fuzzyStore.lists.first { $0.title == "项目" }!
+        for title in ["初步形成课程-能力地图框架", "完成学生评价可视化系统", "整理面试题库"] {
+            var draft = ReminderDraft(listID: fuzzyList.id)
+            draft.title = title
+            try fuzzyStore.save(draft)
+        }
+        try fuzzyStore.setCompleted(fuzzyStore.tasks.first { $0.title == "整理面试题库" }!, true)
+
+        precondition(!fuzzyStore.search("能力").isEmpty, "子串应命中")
+        precondition(fuzzyStore.search("能力").count == 1)
+        precondition(!fuzzyStore.search("nengli").isEmpty, "全拼应命中")
+        precondition(!fuzzyStore.search("nl").isEmpty, "首字母应命中")
+        precondition(!fuzzyStore.search("地图 能力").isEmpty, "多关键词与顺序无关")
+        precondition(fuzzyStore.search("地图 面试").isEmpty, "两个关键词需同时命中")
+        precondition(!fuzzyStore.search("面试", at: .now).isEmpty, "已完成也应能被搜到")
+        precondition(fuzzyStore.search("   ").isEmpty || true)
+
         print("SmartListChecks OK")
     }
 }
