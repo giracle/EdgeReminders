@@ -291,7 +291,7 @@ struct TaskPanelView: View {
         return store.tasks.filter { item in
             guard !item.isCompleted else { return false }
             if filter == "today" {
-                return item.dueDate.map { calendar.isDate($0, inSameDayAs: date) } == true
+                return item.dueDate.map { calendar.isDate($0, inSameDayAs: date) } ?? true
             }
             return listID == nil || item.listID == listID
         }
@@ -868,10 +868,11 @@ struct TaskManagerView: View {
                 case .all, nil:
                     return !item.isCompleted
                 case .today:
-                    return item.dueDate.map { calendar.isDate($0, inSameDayAs: date) } == true
+                    return item.dueDate.map { calendar.isDate($0, inSameDayAs: date) } ?? true
                 case .upcoming:
-                    guard let due = item.dueDate, !item.isCompleted else { return false }
+                    guard !item.isCompleted else { return false }
                     guard let end = calendar.date(byAdding: .day, value: 14, to: calendar.startOfDay(for: date)) else { return false }
+                    let due = item.dueDate ?? calendar.startOfDay(for: date)
                     return due >= calendar.startOfDay(for: date) && due <= end
                 case .completed:
                     return item.isCompleted
@@ -887,7 +888,11 @@ struct TaskManagerView: View {
             if let tag = query.tag,
                !item.tags.contains(where: { $0.localizedCaseInsensitiveCompare(tag) == .orderedSame }) { return false }
             if let priority = query.priority, item.priority != priority { return false }
-            if let due = query.date, !calendar.isDate(item.dueDate ?? .distantPast, inSameDayAs: due) { return false }
+            if let due = query.date {
+                let matchesDate = item.dueDate.map { calendar.isDate($0, inSameDayAs: due) }
+                    ?? calendar.isDate(due, inSameDayAs: date)
+                if !matchesDate { return false }
+            }
             guard !tokens.isEmpty else { return true }
             let listTitle = store.lists.first { $0.id == item.listID }?.title ?? ""
             let text = FuzzySearch.text(for: item, listTitle: listTitle, resources: store.resources(for: item))
@@ -1002,7 +1007,7 @@ private enum TaskScope: Hashable {
 }
 
 private enum DueGroup: String, CaseIterable, Identifiable {
-    case overdue, today, upcoming, unscheduled
+    case overdue, today, upcoming
 
     var id: Self { self }
 
@@ -1011,12 +1016,12 @@ private enum DueGroup: String, CaseIterable, Identifiable {
         case .overdue: "逾期"
         case .today: "今天"
         case .upcoming: "即将到期"
-        case .unscheduled: "未安排日期"
         }
     }
 
     static func classify(_ item: ReminderItem, at now: Date, calendar: Calendar) -> Self {
-        guard let date = item.dueDate else { return .unscheduled }
+        // 未设定日期的事项默认以当天为到期日。
+        guard let date = item.dueDate else { return .today }
         if date < (item.hasTime ? now : calendar.startOfDay(for: now)) { return .overdue }
         return calendar.isDate(date, inSameDayAs: now) ? .today : .upcoming
     }
@@ -1294,12 +1299,10 @@ private struct ReminderRow: View {
                             .foregroundStyle(TaskViewColors.overdue)
                             .accessibilityLabel("高优先级")
                     }
-                    if let date = item.dueDate {
-                        Text(dateLabel(date))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(dateColor)
-                            .lineLimit(1)
-                    }
+                    Text(dateLabel(item.dueDate))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(dateColor)
+                        .lineLimit(1)
                 }
                 .frame(minHeight: 42)
                 .contentShape(.rect)
@@ -1474,7 +1477,8 @@ private struct ReminderRow: View {
         }
     }
 
-    private func dateLabel(_ date: Date) -> String {
+    private func dateLabel(_ date: Date?) -> String {
+        guard let date else { return "全天" }
         if group == .today {
             return item.hasTime ? date.formatted(.dateTime.hour().minute()) : "全天"
         }

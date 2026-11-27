@@ -34,7 +34,7 @@ struct ListTodayIntent: AppIntent {
         let calendar = Calendar.current
         let today = store.tasks
             .filter { item in
-                !item.isCompleted && item.dueDate.map { calendar.isDate($0, inSameDayAs: .now) } == true
+                !item.isCompleted && (item.dueDate.map { calendar.isDate($0, inSameDayAs: .now) } ?? true)
             }
             .sorted { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
         guard !today.isEmpty else { return .result(dialog: "今天没有到期事项。") }

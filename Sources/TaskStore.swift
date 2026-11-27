@@ -807,7 +807,10 @@ final class TaskStore: ObservableObject {
             }
             if let priority = parsed.priority, item.priority != priority { return false }
             if let due = parsed.date {
-                guard let itemDate = item.dueDate, calendar.isDate(itemDate, inSameDayAs: due) else { return false }
+                // 未设定日期的事项默认当天到期，只匹配「今天」类日期条件。
+                let matchesDate = item.dueDate.map { calendar.isDate($0, inSameDayAs: due) }
+                    ?? calendar.isDate(due, inSameDayAs: now)
+                if !matchesDate { return false }
             }
             guard !tokens.isEmpty else { return true }
             let listTitle = lists.first { $0.id == item.listID }?.title ?? ""

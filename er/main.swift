@@ -248,8 +248,9 @@ case "list":
     let now = Date.now
     var items = store.items.filter { !$0.isCompleted }
     if options["all"] == nil {
+        // 未设定日期的事项默认当天到期，出现在今天的列表里。
         items = items.filter { item in
-            item.dueDate.map { calendar.isDate($0, inSameDayAs: now) } == true
+            item.dueDate.map { calendar.isDate($0, inSameDayAs: now) } ?? true
         }
     }
     items.sort { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
@@ -258,7 +259,7 @@ case "list":
         exit(0)
     }
     for item in items {
-        let time = item.dueDate.map { $0.formatted(.dateTime.month().day().hour().minute()) } ?? "无日期"
+        let time = item.dueDate.map { $0.formatted(.dateTime.month().day().hour().minute()) } ?? now.formatted(.dateTime.month().day())
         let priorityMark = item.priority == "high" ? "!" : item.priority == "medium" ? "△" : " "
         let tagText = item.tags.map { $0.map { "#\($0)" }.joined(separator: " ") } ?? ""
         print("\(priorityMark) \(time.padding(toLength: 13, withPad: " ", startingAt: 0))  \(item.title)\(tagText.isEmpty ? "" : "  " + tagText)")
@@ -284,7 +285,7 @@ case "report":
     let now = Date.now
     let open = store.items.filter { !$0.isCompleted }
     let overdue = open.filter { $0.dueDate.map { $0 < calendar.startOfDay(for: now) } == true }
-    let today = open.filter { $0.dueDate.map { calendar.isDate($0, inSameDayAs: now) } == true }
+    let today = open.filter { $0.dueDate.map { calendar.isDate($0, inSameDayAs: now) } ?? true }
     let completedThisWeek = store.items.filter {
         $0.isCompleted && $0.completionDate.map { $0 >= calendar.date(byAdding: .day, value: -7, to: now)! } == true
     }
