@@ -75,13 +75,12 @@ struct TaskPanelView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .tint(TaskViewColors.accent)
-        .overlay(alignment: .top) {
+        .overlay {
             if let burstID {
-                CelebrationBurst(color: TaskViewColors.accent)
+                FireworkCelebration(accent: TaskViewColors.accent)
                     .id(burstID)
-                    .offset(y: 30)
                     .task(id: burstID) {
-                        do { try await Task.sleep(for: .seconds(1.1)) } catch { return }
+                        do { try await Task.sleep(for: .seconds(3.0)) } catch { return }
                         if self.burstID == burstID { self.burstID = nil }
                     }
             }
@@ -95,6 +94,7 @@ struct TaskPanelView: View {
         }
         .onChange(of: store.lastCompletedID) {
             guard store.lastCompletedID != nil else { return }
+            guard prefs.celebrationEnabled else { return }
             burstID = UUID()
             if prefs.soundEnabled, let sound = NSSound(named: NSSound.Name(prefs.completionSound)) {
                 sound.play()
@@ -2997,8 +2997,8 @@ private struct SettingsSheet: View {
                     .disabled(!prefs.soundEnabled)
                 }
                 RowSeparator()
-                settingsRow("完成动画", help: "完成事项时播放粒子小动画") {
-                    Toggle("完成事项时播放小动画", isOn: $prefs.celebrationEnabled)
+                settingsRow("完成动画", help: "完成事项时绽放烟花庆祝") {
+                    Toggle("完成事项时绽放烟花庆祝", isOn: $prefs.celebrationEnabled)
                         .labelsHidden()
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
@@ -3027,7 +3027,7 @@ private struct SettingsSheet: View {
                         Image(systemName: "network")
                             .font(.caption)
                             .accessibilityHidden(true)
-                        Text("http://127.0.0.1:\(LocalHTTPInbox.port)")
+                        Text(verbatim: "http://127.0.0.1:\(LocalHTTPInbox.port)")
                             .font(.caption.monospaced())
                             .textSelection(.enabled)
                         Spacer(minLength: 0)
