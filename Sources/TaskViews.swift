@@ -446,6 +446,7 @@ struct TaskManagerView: View {
                     Button("新建智能清单", systemImage: "plus") { smartListEditor = true }
                         .buttonStyle(.plain)
                         .foregroundStyle(TaskViewColors.accent)
+                        .help("创建按条件自动聚合的清单")
                         .accessibilityIdentifier("add-smart-list")
                 }
 
@@ -461,6 +462,7 @@ struct TaskManagerView: View {
                     Button("新建本机清单", systemImage: "plus") { listEditor = .init() }
                         .buttonStyle(.plain)
                         .foregroundStyle(TaskViewColors.accent)
+                        .help("在本机新建清单")
                         .accessibilityIdentifier("add-local-list")
                 }
 
@@ -481,6 +483,7 @@ struct TaskManagerView: View {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(TaskViewColors.accent)
+                        .help("授权后读取和管理 Apple 提醒事项")
                     case .denied:
                         VStack(alignment: .leading, spacing: 5) {
                             Text("提醒事项权限已关闭").foregroundStyle(.secondary)
@@ -517,62 +520,7 @@ struct TaskManagerView: View {
 
     private var detail: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .center, spacing: 12) {
-                Text(detailTitle)
-                    .font(.title3.weight(.semibold))
-                    .lineLimit(1)
-                Spacer()
-                TextField("搜索：事项、#标签、日期…", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 100, idealWidth: 165, maxWidth: 210)
-                    .accessibilityIdentifier("task-search")
-                Button("撤销", systemImage: "arrow.uturn.backward") { store.undo() }
-                    .labelStyle(.iconOnly)
-                    .help("撤销上一步")
-                    .disabled(!store.canUndo)
-                Button("重做", systemImage: "arrow.uturn.forward") { store.redo() }
-                    .labelStyle(.iconOnly)
-                    .help("重做")
-                    .disabled(!store.canRedo)
-                exportMenu
-                Button("统计", systemImage: "chart.bar.xaxis") { statsSheet = true }
-                    .labelStyle(.iconOnly)
-                    .help("查看统计")
-                Button("设置", systemImage: "gearshape") { settingsSheet = true }
-                    .labelStyle(.iconOnly)
-                    .help("设置")
-                    .accessibilityIdentifier("open-settings")
-                Button(isSelecting ? "退出选择" : "批量选择", systemImage: isSelecting ? "checkmark.rectangle" : "rectangle.stack") {
-                    isSelecting.toggle()
-                    selectedIDs.removeAll()
-                }
-                .labelStyle(.iconOnly)
-                .help("批量选择事项")
-                if selection == .all || selection == nil {
-                    Button("归档已完成", systemImage: "archivebox") {
-                        perform { try store.archiveCompletedLocalItems() }
-                    }
-                    .labelStyle(.iconOnly)
-                    .help("把已完成的本机事项移入归档")
-                }
-                if currentList?.source == .local, let list = currentList {
-                    Menu("清单操作", systemImage: "ellipsis.circle") {
-                        Button("重命名清单") { listEditor = .init(list: list) }
-                        Button("删除清单", role: .destructive) { pendingDeletion = list }
-                    }
-                    .labelStyle(.iconOnly)
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help("清单操作")
-                }
-                Button("新建事项", systemImage: "plus") { editor = .init(listID: currentList?.id) }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut("n", modifiers: [.command])
-                    .disabled(currentList?.isWritable == false)
-                    .accessibilityIdentifier("add-task")
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 13)
+            headerBar
 
             Divider()
 
@@ -605,6 +553,109 @@ struct TaskManagerView: View {
         }
     }
 
+    private var headerBar: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Text(detailTitle)
+                .font(.system(size: 17, weight: .semibold))
+                .lineLimit(1)
+            TimelineView(.everyMinute) { context in
+                let count = visibleItems(at: context.date).count
+                if count > 0 {
+                    Text("\(count) 项")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 10)
+            searchField
+            moreMenu
+            Button("新建事项", systemImage: "plus") {
+                editor = .init(listID: currentList?.id)
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut("n", modifiers: [.command])
+            .disabled(currentList?.isWritable == false)
+            .help("新建事项（⌘N）")
+            .accessibilityIdentifier("add-task")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            TextField("搜索事项、#标签、日期…", text: $search)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .accessibilityIdentifier("task-search")
+            if !search.isEmpty {
+                Button {
+                    search = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("清除搜索")
+            }
+        }
+        .padding(.horizontal, 7)
+        .frame(width: 186, height: 24)
+        .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.primary.opacity(0.08)))
+        .help("搜索事项、标签或日期")
+    }
+
+    private var moreMenu: some View {
+        Menu {
+            Button("撤销", systemImage: "arrow.uturn.backward") { store.undo() }
+                .disabled(!store.canUndo)
+            Button("重做", systemImage: "arrow.uturn.forward") { store.redo() }
+                .disabled(!store.canRedo)
+            Divider()
+            Button(isSelecting ? "退出批量选择" : "批量选择", systemImage: "rectangle.stack") {
+                isSelecting.toggle()
+                selectedIDs.removeAll()
+            }
+            if selection == .all || selection == nil {
+                Button("归档已完成", systemImage: "archivebox") {
+                    perform { try store.archiveCompletedLocalItems() }
+                }
+            }
+            Divider()
+            Menu("导出", systemImage: "square.and.arrow.up") {
+                Button("导出 CSV…") { export(.csv) }
+                Button("导出 Markdown…") { export(.markdown) }
+                Button("导出 JSON…") { export(.json) }
+                Divider()
+                Button("备份全部数据…") { export(.backup) }
+                Button("恢复备份…", action: restoreBackup)
+            }
+            Button("统计…", systemImage: "chart.bar.xaxis") { statsSheet = true }
+            Button("设置…", systemImage: "gearshape") { settingsSheet = true }
+            if currentList?.source == .local, let list = currentList {
+                Divider()
+                Button("重命名清单…") { listEditor = .init(list: list) }
+                Button("删除清单…", role: .destructive) { pendingDeletion = list }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 14, weight: .medium))
+                .frame(width: 24, height: 24)
+                .contentShape(.rect)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("更多操作")
+        .accessibilityIdentifier("more-actions")
+    }
+
     private var currentList: ReminderList? {
         guard case .list(let id) = selection else { return nil }
         return store.lists.first { $0.id == id }
@@ -625,22 +676,6 @@ struct TaskManagerView: View {
         case .list: currentList?.title ?? "清单"
         case .smart(let id): store.smartLists.first { $0.id == id }?.name ?? "智能清单"
         }
-    }
-
-    private var exportMenu: some View {
-        Menu("导出", systemImage: "square.and.arrow.up") {
-            Button("导出 CSV…") { export(.csv) }
-            Button("导出 Markdown…") { export(.markdown) }
-            Button("导出 JSON…") { export(.json) }
-            Divider()
-            Button("备份全部数据…") { export(.backup) }
-            Button("恢复备份…", action: restoreBackup)
-                .help("从备份文件恢复本机清单")
-        }
-        .labelStyle(.iconOnly)
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help("导出与备份")
     }
 
     private var batchBar: some View {
@@ -848,7 +883,7 @@ struct TaskManagerView: View {
     }
 
     private func managerRow(_ item: ReminderItem, group: DueGroup?, at date: Date) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             if isSelecting {
                 Toggle("选择 \(item.title)", isOn: Binding(
                     get: { selectedIDs.contains(item.id) },
@@ -858,6 +893,20 @@ struct TaskManagerView: View {
                 ))
                 .labelsHidden()
                 .toggleStyle(.checkbox)
+            } else {
+                Button {
+                    perform { try store.setCompleted(item, !item.isCompleted) }
+                } label: {
+                    Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(item.isCompleted ? TaskViewColors.accent : Color.secondary.opacity(0.85))
+                        .frame(width: 24, height: 32)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .disabled(!item.isWritable)
+                .help(item.isCompleted ? "标为未完成" : "标为完成")
+                .accessibilityLabel(item.isCompleted ? "恢复 \(item.title)" : "完成 \(item.title)")
             }
             ReminderRow(
                 item: item,
@@ -867,7 +916,8 @@ struct TaskManagerView: View {
                 onOpen: { editor = .init(item: item) },
                 onFocus: { onFocusTask(item) },
                 onStartTimer: { onStartTaskTimer(item) },
-                onContinue: { onContinueTask(item, $0) }
+                onContinue: { onContinueTask(item, $0) },
+                showsCompletionButton: false
             )
         }
         .contextMenu {
@@ -1012,6 +1062,7 @@ private struct ReminderRow: View {
     let onStartTimer: () -> Void
     let onContinue: (Bool) -> Void
 
+    var showsCompletionButton = true
     @State private var hovering = false
     @State private var showsSubtasks = false
     @State private var confirmsParentCompletion = false
@@ -1035,18 +1086,21 @@ private struct ReminderRow: View {
 
     private var summary: some View {
         HStack(spacing: 4) {
-            Button {
-                perform { try store.setCompleted(item, !item.isCompleted) }
-            } label: {
-                Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 17, weight: .regular))
-                    .foregroundStyle(item.isCompleted ? TaskViewColors.accent : Color.secondary)
-                    .frame(width: 30, height: 35)
-                    .contentShape(.rect)
+            if showsCompletionButton {
+                Button {
+                    perform { try store.setCompleted(item, !item.isCompleted) }
+                } label: {
+                    Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 17, weight: .regular))
+                        .foregroundStyle(item.isCompleted ? TaskViewColors.accent : Color.secondary)
+                        .frame(width: 30, height: 35)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .disabled(!item.isWritable)
+                .help(item.isCompleted ? "标为未完成" : "标为完成")
+                .accessibilityLabel(item.isCompleted ? "恢复 \(item.title)" : "完成 \(item.title)")
             }
-            .buttonStyle(.plain)
-            .disabled(!item.isWritable)
-            .accessibilityLabel(item.isCompleted ? "恢复 \(item.title)" : "完成 \(item.title)")
 
             Button(action: onOpen) {
                 HStack(spacing: 8) {
@@ -2315,96 +2369,30 @@ private struct StatsSheet: View {
     @State private var reportError: String?
     @State private var reportLoading = false
 
+    private static let palette: [Color] = [.blue, .teal, .indigo, .green, .orange, .pink]
+
     private var stats: TaskStats {
         TaskStats(tasks: store.tasks, lists: store.lists)
     }
 
     var body: some View {
         let stats = self.stats
-        let maxCount = max(1, stats.dailyCompletions.map(\.count).max() ?? 1)
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 20) {
             Text("统计")
-                .font(.title3.weight(.semibold))
+                .font(.system(size: 17, weight: .semibold))
 
             HStack(spacing: 10) {
-                statCard("待办", value: stats.openTotal, icon: "tray")
-                statCard("已完成", value: stats.completedTotal, icon: "checkmark.circle")
-                statCard("逾期", value: stats.overdue, icon: "exclamationmark.circle")
-                statCard("连续完成", value: stats.streak, icon: "flame")
+                statCard("待办", value: stats.openTotal, icon: "tray.fill", color: .blue)
+                statCard("已完成", value: stats.completedTotal, icon: "checkmark.circle.fill", color: .green)
+                statCard("逾期", value: stats.overdue, icon: "exclamationmark.circle.fill", color: .red)
+                statCard("连续完成", value: stats.streak, icon: "flame.fill", color: .orange)
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("近 14 天完成")
-                    .font(.callout.weight(.semibold))
-                HStack(alignment: .bottom, spacing: 5) {
-                    ForEach(stats.dailyCompletions) { entry in
-                        VStack(spacing: 3) {
-                            Text("\(entry.count)")
-                                .font(.system(size: 9, weight: .medium).monospacedDigit())
-                                .foregroundStyle(.secondary)
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(TaskViewColors.accent.opacity(entry.count == 0 ? 0.18 : 0.85))
-                                .frame(height: max(4, CGFloat(entry.count) / CGFloat(maxCount) * 64))
-                            Text(weekdayLetter(entry.day))
-                                .font(.system(size: 9))
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                }
-                .frame(height: 96, alignment: .bottom)
-            }
+            barChart(stats)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("分布").font(.callout.weight(.semibold))
-                if stats.byList.isEmpty {
-                    Text("暂无待办事项").font(.callout).foregroundStyle(.secondary)
-                } else {
-                    ForEach(stats.byList, id: \.title) { row in
-                        distributionRow(row.title, count: row.count, total: stats.openTotal)
-                    }
-                    ForEach(stats.byTag, id: \.tag) { row in
-                        distributionRow("#" + row.tag, count: row.count, total: stats.openTotal)
-                    }
-                }
-            }
+            distribution(stats)
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("AI 周报").font(.callout.weight(.semibold))
-                    Spacer()
-                    Button {
-                        Task { await generateReport(stats) }
-                    } label: {
-                        if reportLoading {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Label("生成", systemImage: "sparkles").font(.caption)
-                        }
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(reportLoading || !license.isActive || !ai.hasKey)
-                    .help(!license.isActive ? "需要 Pro 许可" : (ai.hasKey ? "用 AI 生成本周简报" : "先在设置里配置 API Key"))
-                }
-                if let reportError {
-                    Text(reportError)
-                        .font(.caption)
-                        .foregroundStyle(TaskViewColors.overdue)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else if let reportText {
-                    Text(reportText)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
-                } else if !license.isActive {
-                    Text("输入 Pro 许可码后可用（设置里可填演示码）。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            aiReportSection
 
             HStack {
                 Spacer()
@@ -2412,47 +2400,144 @@ private struct StatsSheet: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(18)
-        .frame(width: 470)
+        .padding(20)
+        .frame(width: 540)
     }
 
-    private func statCard(_ title: String, value: Int, icon: String) -> some View {
-        VStack(spacing: 4) {
+    // MARK: - 指标卡片
+
+    private func statCard(_ title: String, value: Int, icon: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
             Image(systemName: icon)
-                .font(.body)
-                .foregroundStyle(TaskViewColors.accent)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(color)
+                .accessibilityHidden(true)
             Text("\(value)")
-                .font(.title3.weight(.semibold).monospacedDigit())
+                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .contentTransition(.numericText())
             Text(title)
-                .font(.caption)
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-        .background(.primary.opacity(0.04), in: .rect(cornerRadius: 9))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private func distributionRow(_ label: String, count: Int, total: Int) -> some View {
-        GeometryReader { proxy in
-            let width = max(0, proxy.size.width - 120)
-            HStack(spacing: 8) {
-                Text(label)
-                    .font(.callout)
-                    .lineLimit(1)
-                    .frame(width: 104, alignment: .leading)
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.primary.opacity(0.07))
-                    Capsule()
-                        .fill(TaskViewColors.accent.opacity(0.55))
-                        .frame(width: total == 0 ? 0 : width * CGFloat(count) / CGFloat(total))
+    // MARK: - 14 天柱状图
+
+    private func barChart(_ stats: TaskStats) -> some View {
+        let maxCount = max(1, stats.dailyCompletions.map(\.count).max() ?? 1)
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("近 14 天完成")
+                .font(.system(size: 13, weight: .semibold))
+            HStack(alignment: .bottom, spacing: 6) {
+                ForEach(stats.dailyCompletions) { entry in
+                    VStack(spacing: 5) {
+                        Text("\(entry.count)")
+                            .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
+                            .foregroundStyle(entry.count == 0 ? Color.secondary.opacity(0.7) : Color.primary)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(entry.count == 0 ? Color.primary.opacity(0.09) : TaskViewColors.accent)
+                            .frame(height: max(4, CGFloat(entry.count) / CGFloat(maxCount) * 76))
+                        Text(weekdayLetter(entry.day))
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(height: 6)
-                Text("\(count)")
-                    .font(.callout.monospacedDigit())
+            }
+            .frame(height: 112, alignment: .bottom)
+        }
+    }
+
+    // MARK: - 分布
+
+    private func distribution(_ stats: TaskStats) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("分布")
+                .font(.system(size: 13, weight: .semibold))
+            if stats.byList.isEmpty && stats.byTag.isEmpty {
+                Text("暂无待办事项")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(stats.byList.prefix(5).enumerated()), id: \.element.title) { index, row in
+                    distributionRow(row.title, count: row.count, total: stats.openTotal,
+                                     color: Self.palette[index % Self.palette.count])
+                }
+                ForEach(Array(stats.byTag.prefix(5).enumerated()), id: \.element.tag) { index, row in
+                    distributionRow("#" + row.tag, count: row.count, total: stats.openTotal,
+                                     color: Self.palette[(index + 3) % Self.palette.count])
+                }
+            }
+        }
+    }
+
+    private func distributionRow(_ label: String, count: Int, total: Int, color: Color) -> some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .frame(width: 120, alignment: .leading)
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.07))
+                    Capsule()
+                        .fill(color)
+                        .frame(width: total == 0 ? 0 : max(0, proxy.size.width * CGFloat(count) / CGFloat(total)))
+                }
+            }
+            .frame(height: 8)
+            Text("\(count)")
+                .font(.system(size: 12, weight: .medium, design: .rounded).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 28, alignment: .trailing)
+        }
+    }
+
+    // MARK: - AI 周报
+
+    private var aiReportSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("AI 周报")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button {
+                    Task { await generateReport(stats) }
+                } label: {
+                    if reportLoading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("生成", systemImage: "sparkles").font(.system(size: 12))
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(reportLoading || !license.isActive || !ai.hasKey)
+                .help(!license.isActive ? "需要 Pro 许可" : (ai.hasKey ? "用 AI 生成本周简报" : "先在设置里配置 API Key"))
+            }
+            if let reportError {
+                Text(reportError)
+                    .font(.system(size: 12))
+                    .foregroundStyle(TaskViewColors.overdue)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let reportText {
+                Text(reportText)
+                    .font(.system(size: 13))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+            } else if !license.isActive {
+                Text("输入 Pro 许可码后可用（设置里可填演示码）。")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(height: 18)
     }
 
     private func weekdayLetter(_ day: Date) -> String {

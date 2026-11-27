@@ -232,10 +232,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotifica
 
     @objc private func showManager() {
         if manager == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 540),
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
                                   styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
             window.title = "浮光提醒"
-            window.contentMinSize = NSSize(width: 600, height: 420)
+            window.contentMinSize = NSSize(width: 640, height: 440)
             window.isReleasedWhenClosed = false
             window.contentView = NSHostingView(rootView: TaskManagerView(
                 store: store,
