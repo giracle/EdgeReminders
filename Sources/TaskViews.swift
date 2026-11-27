@@ -2433,15 +2433,16 @@ private struct StatsSheet: View {
         return VStack(alignment: .leading, spacing: 10) {
             Text("近 14 天完成")
                 .font(.system(size: 13, weight: .semibold))
-            HStack(alignment: .bottom, spacing: 6) {
+            HStack(alignment: .bottom, spacing: 8) {
                 ForEach(stats.dailyCompletions) { entry in
                     VStack(spacing: 5) {
-                        Text("\(entry.count)")
+                        Text(entry.count == 0 ? "" : "\(entry.count)")
                             .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
-                            .foregroundStyle(entry.count == 0 ? Color.secondary.opacity(0.7) : Color.primary)
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(entry.count == 0 ? Color.primary.opacity(0.09) : TaskViewColors.accent)
-                            .frame(height: max(4, CGFloat(entry.count) / CGFloat(maxCount) * 76))
+                            .foregroundStyle(.secondary)
+                            .frame(height: 12)
+                        RoundedRectangle(cornerRadius: 2.5)
+                            .fill(entry.count == 0 ? Color.primary.opacity(0.08) : TaskViewColors.accent)
+                            .frame(width: 14, height: max(3, CGFloat(entry.count) / CGFloat(maxCount) * 72))
                         Text(weekdayLetter(entry.day))
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
@@ -2449,7 +2450,7 @@ private struct StatsSheet: View {
                     .frame(maxWidth: .infinity)
                 }
             }
-            .frame(height: 112, alignment: .bottom)
+            .frame(height: 110, alignment: .bottom)
         }
     }
 
